@@ -1,0 +1,14 @@
+{
+  "name": "opsforge-acceptance",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpsForge 验收测试套件",
+  "scripts": {
+    "test": "playwright test",
+    "test:infra": "playwright test infra/",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}
