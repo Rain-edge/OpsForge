@@ -1,7 +1,7 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-# OpsForge：Ansible 执行引擎
+# OpsForge：Ansible 执行引擎；Playbook 管理 增加 Playbook 模型与 job 外键升级
 from django.db import models
 from libs import ModelMixin, human_datetime
 from apps.account.models import User
@@ -30,8 +30,8 @@ class AnsibleJob(models.Model, ModelMixin):
 
     user = models.ForeignKey(User, models.PROTECT, related_name='+')
     host_ids = models.TextField(default='[]')
-    # Playbook 管理 落 Playbook 模型后升级为真外键，本次任务仅占位
-    playbook_id = models.IntegerField(null=True)
+    # Playbook 管理 升级真外键（T1 占位整型）：SET_NULL 保留任务历史，删除 Playbook 不受阻
+    playbook = models.ForeignKey('Playbook', models.SET_NULL, null=True, related_name='+')
     raw_module = models.TextField(null=True)
     extra_vars = models.TextField(default='{}')
     status = models.CharField(max_length=20, default=STATUS_PENDING, choices=STATUS_CHOICES)
@@ -53,4 +53,24 @@ class AnsibleJob(models.Model, ModelMixin):
 
     class Meta:
         db_table = 'ansible_jobs'
+        ordering = ('-id',)
+
+
+class Playbook(models.Model, ModelMixin):
+    """Playbook 库：平台内增删改查 + git 版本化。
+
+    content 与版本库文件（REPOS_DIR/ansible_ops/playbooks/{id}.yml）互为镜像，
+    写路径统一经 repo.write_and_commit，保证 git 提交与字段更新同拍完成。
+    """
+    name = models.CharField(max_length=100, unique=True)
+    description = models.CharField(max_length=255, default='')
+    content = models.TextField(default='')
+    updated_by = models.ForeignKey(User, models.PROTECT, related_name='+')
+    updated_at = models.CharField(max_length=20, default=human_datetime)
+
+    def __repr__(self):
+        return '<Playbook %r>' % self.id
+
+    class Meta:
+        db_table = 'ansible_playbooks'
         ordering = ('-id',)

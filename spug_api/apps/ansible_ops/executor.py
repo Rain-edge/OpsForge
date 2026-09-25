@@ -1,13 +1,15 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-# OpsForge：Ansible 执行引擎（subprocess 直跑，并发上限 2）
+# OpsForge：Ansible 执行引擎（subprocess 直跑，并发上限 2）；
+# Playbook 管理 解锁 Playbook 执行（ansible-playbook，文件取自版本库）
 from django.conf import settings
 from django.db import close_old_connections
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from apps.ansible_ops.models import AnsibleJob
 from apps.ansible_ops.inventory import generate_inventory
+from apps.ansible_ops.repo import playbook_file
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -136,20 +138,29 @@ def parse_output(output):
 
 
 def build_command(job, inv_path, work_dir):
-    args = ['ansible', '-i', str(inv_path), 'all', '-f', '10']
-    if job.playbook_id:
-        # views 层已拦截，executor 兜底防御（Playbook 库随 Playbook 管理 落地）
-        raise Exception('Playbook 库未上线（提供），当前仅支持 raw 模块')
-    raw = json.loads(job.raw_module)
-    args += ['-m', raw['name']]
-    if raw.get('args'):
-        args += ['-a', raw['args']]
     extra_vars = json.loads(job.extra_vars)
+    extra_args = []
     if extra_vars:
         vars_file = Path(work_dir) / 'extra_vars.json'
         vars_file.write_text(json.dumps(extra_vars), encoding='utf-8')
-        args += ['-e', f'@{vars_file}']
-    return args
+        extra_args = ['-e', f'@{vars_file}']
+    if job.playbook_id:
+        # Playbook 执行。文件即版本库内 {id}.yml（repo.py 单一事实源，
+        # 平台编辑/回滚后内容随之变化）；缺失说明卷被清理或未走平台创建
+        path = playbook_file(job.playbook_id)
+        if not path.exists():
+            raise Exception(f'Playbook 文件缺失：{path}')
+        return ['ansible-playbook', '-i', str(inv_path), '-f', '10', str(path)] + extra_args
+    if not job.raw_module:
+        # playbook 任务在排队期间 Playbook 被删：外键 SET_NULL 置空 playbook_id，
+        # raw_module 也是空，无法构造任何命令，给出可读错误落 failed
+        raise Exception('Playbook 已被删除，任务无法执行')
+    raw = json.loads(job.raw_module)
+    args = ['ansible', '-i', str(inv_path), 'all', '-f', '10']
+    args += ['-m', raw['name']]
+    if raw.get('args'):
+        args += ['-a', raw['args']]
+    return args + extra_args
 
 
 def run_job(job_id):

@@ -1,14 +1,18 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-# OpsForge：Ansible 执行引擎 API；实时回传增加任务终止
+# OpsForge：Ansible 执行引擎 API；实时回传增加任务终止；
+# Playbook 管理 增加 Playbook 管理与版本化 API，并放开 exec 的 playbook 执行
 from django.views.generic import View
 from django.core.paginator import Paginator
 from django_redis import get_redis_connection
-from libs import json_response, JsonParser, Argument, auth
-from apps.ansible_ops.models import AnsibleJob
+from libs import json_response, JsonParser, Argument, auth, human_datetime
+from apps.ansible_ops.models import AnsibleJob, Playbook
 from apps.ansible_ops.executor import (
     submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY, PID_KEY, KILL_KEY)
+from apps.ansible_ops.repo import (
+    normalize_content, syntax_check, write_and_commit, delete_and_commit,
+    get_content_at, list_versions, playbook_file)
 from apps.account.utils import has_host_perm
 from apps.host.models import Host
 import json
@@ -35,15 +39,16 @@ class ExecView(View):
                 return json_response(error='playbook_id 与 raw_module 只能二选一')
             if not form.playbook_id and not form.raw_module:
                 return json_response(error='playbook_id 与 raw_module 必须提供其一')
-            if form.playbook_id:
-                return json_response(error='Playbook 库未上线（提供），当前仅支持 raw 模块')
+            if form.playbook_id and not Playbook.objects.filter(pk=form.playbook_id).exists():
+                return json_response(error='Playbook 不存在，请刷新后重试')
             raw = form.raw_module
-            if not raw.get('name') or not isinstance(raw.get('name'), str):
-                return json_response(error='raw_module.name 不能为空')
-            if not re.fullmatch(r'[A-Za-z0-9_.]+', raw['name']):
-                return json_response(error='raw_module.name 仅允许字母数字下划线与点')
-            if raw.get('args') is not None and not isinstance(raw.get('args'), str):
-                return json_response(error='raw_module.args 必须是字符串')
+            if raw:
+                if not raw.get('name') or not isinstance(raw.get('name'), str):
+                    return json_response(error='raw_module.name 不能为空')
+                if not re.fullmatch(r'[A-Za-z0-9_.]+', raw['name']):
+                    return json_response(error='raw_module.name 仅允许字母数字下划线与点')
+                if raw.get('args') is not None and not isinstance(raw.get('args'), str):
+                    return json_response(error='raw_module.args 必须是字符串')
             if not has_host_perm(request.user, host_ids):
                 return json_response(error='无权访问主机，请联系管理员')
             if Host.objects.filter(id__in=host_ids).count() != len(host_ids):
@@ -58,7 +63,8 @@ class ExecView(View):
                 job = AnsibleJob.objects.create(
                     user=request.user,
                     host_ids=json.dumps(host_ids),
-                    raw_module=json.dumps(raw),
+                    playbook_id=form.playbook_id or None,
+                    raw_module=json.dumps(raw) if raw else None,
                     extra_vars=json.dumps(form.extra_vars),
                 )
                 os.makedirs(LOG_DIR, exist_ok=True)
@@ -137,3 +143,147 @@ class JobDetailView(View):
             for x in Host.objects.filter(id__in=json.loads(job.host_ids))
         ]
         return json_response(data)
+
+
+# ---- Playbook 管理与 git 版本化 ----
+# 权限沿用 T1/T2 的两个字符串（view=读，exec=写），细粒度权限待权限体系范围
+# 明确后再收口（范围边界：第一版不做权限改造，同实时回传 routes.js 注释）
+
+# 模型 max_length=100，JsonParser 无长度限制，超长提交会 DataError 500
+NAME_ARGUMENT = dict(help='请输入 Playbook 名称', filter=lambda x: len(x) <= 100)
+
+
+def _serialize(pb):
+    data = pb.to_dict()
+    data['updated_by_name'] = pb.updated_by.nickname
+    return data
+
+
+class PlaybookListView(View):
+    @auth('ansible_ops.view')
+    def get(self, request):
+        items = Playbook.objects.select_related('updated_by')
+        return json_response([_serialize(x) for x in items])
+
+    @auth('ansible_ops.exec')
+    def post(self, request):
+        form, error = JsonParser(
+            Argument('name', **NAME_ARGUMENT),
+            Argument('description', required=False, default=''),
+            Argument('content', help='请输入 Playbook 内容'),
+        ).parse(request.body)
+        if error is None:
+            if Playbook.objects.filter(name=form.name).exists():
+                return json_response(error='该名称已存在')
+            content = normalize_content(form.content)
+            ok, output = syntax_check(content)
+            if not ok:
+                return json_response(error='语法校验未通过：\n' + (output or 'ansible 无输出'))
+            pb = Playbook.objects.create(
+                name=form.name, description=form.description,
+                content=content, updated_by=request.user)
+            try:
+                write_and_commit(pb.id, content, f'opsforge: update {form.name}', request.user)
+            except Exception as e:
+                # 行已建但提交失败：清行并清文件，不留孤儿（多 worker 下 index.lock
+                # 冲突等 git 错误在此显式回传，不打 500）
+                pb.delete()
+                playbook_file(pb.id).unlink(missing_ok=True)
+                return json_response(error=f'git 提交失败：{e}')
+            return json_response({'id': pb.id})
+        return json_response(error=error)
+
+
+class PlaybookDetailView(View):
+    @auth('ansible_ops.view')
+    def get(self, request, pk):
+        pb = Playbook.objects.filter(pk=pk).first()
+        if not pb:
+            return json_response(error='Playbook 不存在')
+        return json_response(_serialize(pb))
+
+    @auth('ansible_ops.exec')
+    def put(self, request, pk):
+        pb = Playbook.objects.filter(pk=pk).first()
+        if not pb:
+            return json_response(error='Playbook 不存在')
+        form, error = JsonParser(
+            Argument('name', **NAME_ARGUMENT),
+            Argument('description', required=False, default=''),
+            Argument('content', help='请输入 Playbook 内容'),
+        ).parse(request.body)
+        if error is None:
+            if form.name != pb.name and Playbook.objects.filter(name=form.name).exists():
+                return json_response(error='该名称已存在')
+            content = normalize_content(form.content)
+            ok, output = syntax_check(content)
+            if not ok:
+                return json_response(error='语法校验未通过：\n' + (output or 'ansible 无输出'))
+            # 内容无变化（仅改名称/描述）不产生空提交污染版本历史
+            if content != pb.content:
+                # 先提交 git 再更新字段：文件内容以版本库为准，失败时数据库不产生漂移
+                try:
+                    write_and_commit(pb.id, content, f'opsforge: update {form.name}', request.user)
+                except Exception as e:
+                    return json_response(error=f'git 提交失败：{e}')
+            pb.name = form.name
+            pb.description = form.description
+            pb.content = content
+            pb.updated_by = request.user
+            pb.updated_at = human_datetime()
+            pb.save()
+            return json_response()
+        return json_response(error=error)
+
+    @auth('ansible_ops.exec')
+    def delete(self, request, pk):
+        pb = Playbook.objects.filter(pk=pk).first()
+        if not pb:
+            return json_response(error='Playbook 不存在')
+        # 先落 git 再删行：版本库是事实源，行删除失败（外键保护等）可重试不损数据；
+        # 文件与历史都不存在时 delete_and_commit 跳过 git，删除总能自愈
+        delete_and_commit(pb.id, f'opsforge: delete {pb.name}', request.user)
+        pb.delete()
+        return json_response()
+
+
+class PlaybookVersionsView(View):
+    @auth('ansible_ops.view')
+    def get(self, request, pk):
+        if not Playbook.objects.filter(pk=pk).exists():
+            return json_response(error='Playbook 不存在')
+        return json_response(list_versions(pk))
+
+
+class PlaybookRollbackView(View):
+    """回滚（约定：POST body {commit}）：取目标 commit 内容重新入库为新提交，
+    历史保持线性；content 字段同步更新。"""
+    @auth('ansible_ops.exec')
+    def post(self, request, pk):
+        pb = Playbook.objects.filter(pk=pk).first()
+        if not pb:
+            return json_response(error='Playbook 不存在')
+        form, error = JsonParser(
+            Argument('commit', help='请指定回滚目标 commit')
+        ).parse(request.body)
+        if error is None:
+            try:
+                content = get_content_at(pb.id, form.commit)
+            except ValueError as e:
+                return json_response(error=str(e))
+            ok, output = syntax_check(content)
+            if not ok:
+                # 历史版本入库前均过校验，此为防御（防仓库被绕过平台改动）
+                return json_response(error='目标版本语法校验未通过，已放弃回滚：\n' + output)
+            try:
+                write_and_commit(
+                    pb.id, content, f'opsforge: rollback {pb.name} to {str(form.commit)[:7]}',
+                    request.user)
+            except Exception as e:
+                return json_response(error=f'git 提交失败：{e}')
+            pb.content = content
+            pb.updated_by = request.user
+            pb.updated_at = human_datetime()
+            pb.save()
+            return json_response()
+        return json_response(error=error)

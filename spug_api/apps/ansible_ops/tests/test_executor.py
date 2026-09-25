@@ -5,11 +5,12 @@
 import json
 
 import pytest
+from types import SimpleNamespace
 
 from apps.account.models import User
 from apps.host.models import Host
 from apps.ansible_ops import executor
-from apps.ansible_ops.models import AnsibleJob
+from apps.ansible_ops.models import AnsibleJob, Playbook
 
 
 TEST_KEY = '-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n'
@@ -278,6 +279,70 @@ def test_on_timeout_sets_flag_and_kills_process_group(monkeypatch):
         assert killed == [(424242, signal_mod.SIGKILL)]
     finally:
         rds.delete(executor.KILL_KEY.format(999))
+
+
+# ---- Playbook 执行分支 ----
+
+PLAYBOOK = '- hosts: all\n  tasks:\n    - name: ping\n      ping:\n'
+
+
+@pytest.mark.django_db
+def test_build_command_adhoc(user, host, tmp_path):
+    # 重构保护：ad-hoc 命令形状不回归（-m/-a 与 extra_vars 文件参数）
+    job = AnsibleJob.objects.create(
+        user=user, host_ids=json.dumps([host.id]),
+        raw_module=json.dumps({'name': 'shell', 'args': 'hostname'}),
+        extra_vars=json.dumps({'k': 'v'}))
+    command = executor.build_command(job, tmp_path / 'inv.ini', tmp_path)
+    assert command[0] == 'ansible'
+    assert '-m' in command and 'shell' in command
+    assert '-a' in command and 'hostname' in command
+    assert '-e' in command and command[command.index('-e') + 1].startswith('@')
+
+
+@pytest.mark.django_db
+def test_build_command_playbook(user, host, tmp_path):
+    from django.test import override_settings
+    from apps.ansible_ops.repo import write_and_commit
+    user_ns = SimpleNamespace(nickname='Tester', username='tester')
+    with override_settings(REPOS_DIR=str(tmp_path / 'repos')):
+        # FK 完整性：job 必须指向真实 Playbook 行（sqlite 事务结束会校验）
+        pb = Playbook.objects.create(name='demo', content=PLAYBOOK, updated_by=user)
+        write_and_commit(pb.id, PLAYBOOK, 'opsforge: update demo', user_ns)
+        job = AnsibleJob.objects.create(
+            user=user, host_ids=json.dumps([host.id]), playbook_id=pb.id, extra_vars='{}')
+        command = executor.build_command(job, tmp_path / 'inv.ini', tmp_path)
+    assert command[0] == 'ansible-playbook'
+    assert command[1:5] == ['-i', str(tmp_path / 'inv.ini'), '-f', '10']
+    assert str(command[5]).endswith(f'{pb.id}.yml')
+
+
+@pytest.mark.django_db
+def test_build_command_playbook_missing_file(user, host, tmp_path):
+    from django.test import override_settings
+    with override_settings(REPOS_DIR=str(tmp_path / 'repos')):
+        # 行存在但文件缺失（如卷被清理）：给出可读错误而非 500
+        pb = Playbook.objects.create(name='demo', content=PLAYBOOK, updated_by=user)
+        job = AnsibleJob.objects.create(
+            user=user, host_ids=json.dumps([host.id]), playbook_id=pb.id, extra_vars='{}')
+        with pytest.raises(Exception, match='Playbook 文件缺失'):
+            executor.build_command(job, tmp_path / 'inv.ini', tmp_path)
+
+
+@pytest.mark.django_db
+def test_run_job_playbook_mode(user, host, monkeypatch, tmp_path):
+    # 端到端（mock 进程输出）：playbook job 走 ansible-playbook 分支并按 recap 落终态
+    from django.test import override_settings
+    from apps.ansible_ops.repo import write_and_commit
+    user_ns = SimpleNamespace(nickname='Tester', username='tester')
+    with override_settings(REPOS_DIR=str(tmp_path / 'repos')):
+        pb = Playbook.objects.create(name='demo', content=PLAYBOOK, updated_by=user)
+        write_and_commit(pb.id, PLAYBOOK, 'opsforge: update demo', user_ns)
+        job = AnsibleJob.objects.create(
+            user=user, host_ids=json.dumps([host.id]), playbook_id=pb.id, extra_vars='{}')
+        result = run_with_output(monkeypatch, tmp_path, job, RECAP_OK)
+    assert result.status == AnsibleJob.STATUS_SUCCESS
+    assert json.loads(result.summary) == {'ok': 2, 'changed': 1, 'unreachable': 0, 'failed': 0}
 
 
 def _redis():

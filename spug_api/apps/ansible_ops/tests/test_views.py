@@ -1,7 +1,8 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-# OpsForge：ExecView 参数校验与 job 创建用例（约定验收 1）；实时回传增加终止用例
+# OpsForge：ExecView 参数校验与 job 创建用例（约定验收 1）；实时回传增加终止用例；
+# Playbook 管理 放开 playbook 执行（原"Playbook 管理 前拒绝"占位用例随之改写）
 import json
 import signal
 
@@ -12,7 +13,7 @@ from django_redis import get_redis_connection
 from apps.account.models import User
 from apps.host.models import Host
 from apps.ansible_ops import views as ansible_views
-from apps.ansible_ops.models import AnsibleJob
+from apps.ansible_ops.models import AnsibleJob, Playbook
 from apps.ansible_ops.executor import RUNNING_KEY, PID_KEY, KILL_KEY
 from apps.ansible_ops.views import ExecView, JobListView, JobDetailView, JobKillView
 
@@ -66,10 +67,26 @@ def test_exec_rejects_playbook_and_raw_together(user, host):
 
 
 @pytest.mark.django_db
-def test_exec_rejects_playbook_before_t3(user, host):
-    # Playbook 库随 Playbook 管理 落地，本次任务 playbook_id 一律拒绝
-    response = call_exec(user, {'host_ids': [host.id], 'playbook_id': 1})
-    assert 'Playbook 管理' in json.loads(response.content)['error']
+def test_exec_rejects_missing_playbook(user, host):
+    # Playbook 管理 起 playbook 执行解锁：不存在的 id 给出可读错误
+    response = call_exec(user, {'host_ids': [host.id], 'playbook_id': 424242})
+    assert 'Playbook 不存在' in json.loads(response.content)['error']
+
+
+@pytest.mark.django_db
+def test_exec_playbook_creates_pending_job(user, host, monkeypatch):
+    # playbook 模式（约定：exec 的 playbook_id 即 Playbook.id）；
+    # 不真正启动执行线程（执行引擎有独立用例），只验证 API 契约
+    submitted = []
+    monkeypatch.setattr(ansible_views, 'submit_job', lambda job_id: submitted.append(job_id))
+    pb = Playbook.objects.create(name='demo', content='', updated_by=user)
+    response = call_exec(user, {'host_ids': [host.id], 'playbook_id': pb.id})
+    data = json.loads(response.content)
+    assert not data['error']
+    job = AnsibleJob.objects.get(pk=data['data']['job_id'])
+    assert job.playbook_id == pb.id
+    assert job.raw_module is None
+    assert submitted == [job.id]
 
 
 @pytest.mark.django_db
