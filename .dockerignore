@@ -1,0 +1,19 @@
+# OpsForge：构建上下文白名单——镜像只需要二开 app、注册文件与上游构建
+# 配置原件，其余（前端源码、验收套件/node_modules、流程文档）一律不进上下文
+*
+!spug_api
+spug_api/*
+!spug_api/apps
+spug_api/apps/*
+!spug_api/apps/ansible_ops
+**/__pycache__
+!spug_api/pytest.ini
+!spug_api/spug
+spug_api/spug/*
+!spug_api/spug/test_settings.py
+!lab
+lab/*
+!lab/docker
+!docs
+docs/*
+!docs/docker

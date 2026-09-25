@@ -3,3 +3,4 @@
 *.sh text eol=lf
 lab/nodes/entrypoint.sh text eol=lf
 lab/nodes/.env.example text eol=lf
+docs/docker/** text eol=lf
