@@ -126,3 +126,98 @@ docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml 
 | 镜像体积 | spug-service:4.0 = 629MB，mariadb:10.8 = 370MB |
 | 首启代码准备 | 约 10 秒（gitee clone + CDN 前端包） |
 | 上游规模 | 640 提交 / 315 个跟踪文件 |
+
+## 8. 节点实验环境（2026-09-06）
+
+用容器模拟 7 台被管"真机"（systemd + sshd + 排障工具），作为平台纳管与后续
+Ansible/巡检/自愈/Playbook 部署的靶场。设计取舍见 [ADR-0002](adr/0002-labnode-systemd-and-network.md)。
+
+### 8.1 节点清单（约定固定）
+
+| 节点 | 分组 | 角色 | 宿主 SSH 端口 |
+|---|---|---|---|
+| web-01 | web | Nginx（兼 LB/Keepalived 实验） | 2221 |
+| web-02 | web | Nginx（兼 LB/Keepalived 实验） | 2222 |
+| db-01 | db | MySQL 主 | 2223 |
+| db-02 | db | MySQL 从 | 2224 |
+| cache-01 | cache | Redis master | 2225 |
+| cache-02 | cache | Redis replica | 2226 |
+| cache-03 | cache | Redis sentinel | 2227 |
+
+- 节点内统一 SSH 端口 22（平台纳管经 docker 网络直连 `节点名:22`）；宿主映射端口仅用于人工验收。
+- 镜像 `labnode:1.0`：自建（debian:12-slim + systemd + openssh-server + python3 + 排障工具），构建文件 `lab/nodes/Dockerfile`。
+- 每节点内存限额 256MB（compose `mem_limit`）。
+
+### 8.2 启动 / 停止
+
+```bash
+# 首次：准备口令文件（.env 不入库，已在 .gitignore）
+cd lab/nodes && cp .env.example .env   # OPS_PASSWORD 见下文，可改
+docker compose up -d --build           # 构建镜像 + 启动 7 节点
+
+# 日常 停止/启动（在 lab/nodes 下）
+docker compose down
+docker compose up -d
+```
+
+### 8.3 口令与 SSH
+
+- 统一实验用户 `ops`，口令 `Opsforge.lab`（`lab/nodes/.env` 的 `OPS_PASSWORD`，仅限本地实验环境，勿用于任何公网/共享环境）。
+- 人工验证（宿主）：`ssh -p 2221 ops@localhost`，输入上述口令。
+- 平台侧认证：Spug v4 主机仅支持密钥认证。纳管时携带密码，平台自动用密码登录一次
+  并把平台公钥追加到节点 `~/.ssh/authorized_keys`（容器内 `views._do_host_verify`），
+  此后平台全部走私钥认证；密码通道仍开启（作为人工 ssh 入口），因此宿主端口映射绑定
+  `127.0.0.1`，不暴露到局域网。
+
+### 8.4 纳管与发布（脚本化，幂等可重复）
+
+```bash
+# 1) 纳管 7 台：建分组 web/db/cache + 逐台注册 + 平台公钥自动分发
+bash lab/scripts/register_hosts.sh            # 默认 http://localhost
+
+# 2) 应用发布演示：建环境/应用/发布配置 → 从本地 bare 仓库发布静态页到 web 组
+bash lab/scripts/demo_release.sh
+```
+
+两个脚本均按**平台容器内实际运行的 v4.0.1 接口**编写（见 8.6 坑 2）。
+
+- 发布源仓库：平台容器内 `/data/repos/demo-app.git`（bare，静态页 index.html v1.0，
+  落在 `spug-repos` 命名卷持久化）。创建命令：
+
+```bash
+MSYS_NO_PATHCONV=1 docker exec -w /tmp spug sh -c '
+mkdir -p /tmp/demo-app && cd /tmp/demo-app && git init -q -b main
+printf "<!DOCTYPE html>\n<html><body><h1>OpsForge Demo App</h1><p>version: 1.0</p></body></html>\n" > index.html
+printf "#!/bin/bash\n" > build.sh
+git add -A && git -c user.email=opsforge@lab.local -c user.name=opsforge commit -qm "feat: demo static page v1.0"
+git clone -q --bare /tmp/demo-app /data/repos/demo-app.git && rm -rf /tmp/demo-app'
+```
+
+- 发布产物验证：`docker exec web-01 ls /home/ops/demo/`（web-02 同）→ `index.html`、`build.sh`。
+
+### 8.5 实测数据（2026-09-06）
+
+| 项 | 值 |
+|---|---|
+| 节点运行状态 | 7/7 running，`systemctl is-active ssh` 全 active，hostname 正确 |
+| 宿主端口 2221-2227 | 全部 open（/dev/tcp 探测） |
+| SSH 登录 | 平台容器 paramiko 密码登录 7/7 成功；人工 ssh 可登录 |
+| 平台纳管 | 7/7（web×2 / db×2 / cache×3 分组正确，状态全部"已验证"） |
+| 批量执行 | `hostname && free -m` 7/7 成功，耗时 0.4s |
+| Web 终端 | 双击主机打开会话，`ops@web-01:~$` 提示符 + 命令回显正常 |
+| 应用发布 | 申请 id=5 发布成功，产物 2/2 节点落地 |
+| 节点内存 | 每台 8.4~10.2 MiB，7 台合计 ≈62 MiB（限额 256MiB/台生效） |
+| **总内存** | 平台 549 MiB（spug 455.6 + db 93.4）+ 节点 62 MiB ≈ **611 MiB**，预算 4.5GB 内（内存预算降级条款未触发） |
+
+### 8.6 踩坑清单
+
+| # | 坑 | 现象 | 处置 |
+|---|---|---|---|
+| 1 | 容器内 `free -m` 不是节点内存 | 显示 WSL2 宿主的 5.9GB | cgroup 限额不改变 free 视图；巡检报表中节点内存改读 `/sys/fs/cgroup/memory.current`（cgroup v2）或 docker stats |
+| 2 | API 与本仓库源码不一致 | host 接口报「请选择主机分组」，工作区源码中查无此文案 | 容器运行 gitee 拉取的 v4.0.1：host 接口用独立分组表（先 POST `/api/host/group/` 建组，再传 `group_ids`）；工作区 tip 已改为 `zone` 字符串。**以「容器内实际运行代码」为接口核对基准** |
+| 3 | Git Bash 下 curl 发中文 JSON 失败 | 平台报 `Invalid data type for parse` | Windows Git Bash 的中文按 GBK 编码发出，json.loads 解析 UTF-8 失败；lab 脚本所有 JSON body 一律用 ASCII |
+| 4 | 应用 key 校验 | `demo-app` 被拒 | v4.0.1 要求 key 仅字母/数字/下划线 → 用 `demo_app` |
+| 5 | 平台 JSON 响应带空格 | `"access_token": "..."`（冒号后有空格） | 脚本提取 token/id 时模式写 `[ ]*` 兼容；错误字段可能为 `null` 而非空串 |
+| 6 | Web 终端打开主机无反应 | 单击树节点无会话 | v4.0.1 交互为**双击**叶子节点开会话（`nativeEvent.detail > 1`） |
+| 7 | 发布申请创建响应无 id | POST 成功但 body 只有 `{"data":"","error":null}` | 从申请列表反查：列表按 `-id` 排序，首个元素即最新（`GET /api/deploy/request/`） |
+| 8 | json_response 成功格式 | `{"data":"", "error":""}`；部分接口成功返回 `"error": null` | 判断成功需同时兼容两种 error 取值 |

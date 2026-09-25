@@ -1,0 +1,68 @@
+# OpsForge 实验被管节点编排——与平台 compose（docs/docker/）分离
+#
+# 用法：
+#   cp .env.example .env        # 提供 OPS_PASSWORD（见 RUNBOOK「节点实验环境」章节）
+#   docker compose up -d --build
+#
+# 网络：接入平台 compose 所在的 docker_default（external），平台容器可直连
+#   <节点名>:22（纳管地址）；同时每节点映射宿主 2221-2227 供人工验收（ssh -p 2221 ops@localhost）。
+# 资源：每节点 mem_limit 256m（内存预算：7 节点 × 256MB ≈ 1.8GB）。
+
+x-node-base: &node-base
+  image: labnode:1.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  privileged: true            # systemd 容器要求（平台容器亦为官方要求 privileged）
+  mem_limit: 256m
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+  environment:
+    # 口令不进仓库：.env 注入（.gitignore 已排除 .env）；缺失时 compose 直接报错拒绝启动
+    OPS_PASSWORD: ${OPS_PASSWORD:?please cp .env.example .env first}
+  networks:
+    - platform
+
+services:
+  web-01:
+    <<: *node-base
+    container_name: web-01
+    hostname: web-01
+    ports: ["127.0.0.1:2221:22"]
+  web-02:
+    <<: *node-base
+    container_name: web-02
+    hostname: web-02
+    ports: ["127.0.0.1:2222:22"]
+  db-01:
+    <<: *node-base
+    container_name: db-01
+    hostname: db-01
+    ports: ["127.0.0.1:2223:22"]
+  db-02:
+    <<: *node-base
+    container_name: db-02
+    hostname: db-02
+    ports: ["127.0.0.1:2224:22"]
+  cache-01:
+    <<: *node-base
+    container_name: cache-01
+    hostname: cache-01
+    ports: ["127.0.0.1:2225:22"]
+  cache-02:
+    <<: *node-base
+    container_name: cache-02
+    hostname: cache-02
+    ports: ["127.0.0.1:2226:22"]
+  cache-03:
+    <<: *node-base
+    container_name: cache-03
+    hostname: cache-03
+    ports: ["127.0.0.1:2227:22"]
+
+networks:
+  platform:
+    name: docker_default
+    external: true
