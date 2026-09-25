@@ -257,3 +257,36 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python -m pytest apps/ansible_
   BuildKit 跑 makemigrations 会 segfault，仅在容器运行期执行）。
 - 实测数据：7 节点 raw ping 两连跑 7/7 ok 且 summary 一致（幂等前置证明）；坏主机 →
   job=failed + 日志含 UNREACHABLE 详情；rebuild 后回归 7/7；pytest 27/27。
+
+## 10. 实时回传、终止与前端页面（2026-09-11）
+
+```
+# 前端构建形态：镜像多阶段，node:18-alpine 阶段克隆 gitee v4.0.1 前端源码
+# + lab/web-overlay/ 覆盖（新页面 + routes.js/config-overrides.js 注册副本）
+# → npm install --legacy-peer-deps（npmmirror）→ npm run build → 覆盖 CDN tarball 产物。
+# 工作区 spug_web/ 是上游 2.x lineage，不是运行前端的基线，勿在其上改。
+
+# API 变更与新增（x-token 鉴权同平台）：
+#   POST /api/ansible_ops/exec/               → 200 {job_id}（原定 202：spug 前端
+#     http 封装把非 200 一律按失败弹出，故回归 200，偏差已记录记录待确认）
+#   POST /api/ansible_ops/jobs/{id}/kill/     → 终止：running 走进程组 SIGTERM
+#     （pid 经 redis spug:ansible:pid:{id} 跨 gunicorn worker 传递）；
+#     pending 预置标记排队生效。终态 failed + summary {"reason":"killed"|"timeout"}
+
+# WebSocket 实时回传：/api/ws/ansible_ops/jobs/{id}/?x-token=<32位token>
+#   group = ansible-job-{id}；事件 {type:"log",line,ts} 逐行 + {type:"done",status,summary}；
+#   中途连接先补发日志文件已有内容；已终态任务补发全量+done 后关闭（历史详情复用此通道回放）。
+#   排查连接问题先看 nginx access log：WS 升级记为 "GET /api/ws/... 101"。
+
+# 前端页面（浏览器访问）：
+#   /ansible/exec  发起执行 + 实时滚动 + 运行中可终止
+#   /ansible/jobs  历史列表 + 详情日志回放
+```
+
+- 前端产物无版本化 lockfile（上游无 package-lock.json）：rebuild 失败优先怀疑
+  npmmirror 依赖漂移；npm 层缓存未失效时不受影响。
+- **改前端后验证必看 bundle 版本**：nginx 不给 index.html 发 no-cache，浏览器启发式
+  缓存整页加载且 SPA 内部导航不换 bundle——用带 query 的 URL 强刷或换 origin
+  （127.0.0.1），并 grep 产物特征串确认（如 `grep -c ansible/exec build/static/js/main.*.js`）。
+- kill 后残留 `ssh ... [mux]` 进程为 ansible ControlPersist 复用 master（设计行为，
+  空闲后自退），非泄漏；pytest 42/42（的 27 + 本次任务 15）。
