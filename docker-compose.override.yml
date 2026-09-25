@@ -1,0 +1,18 @@
+# OpsForge 本地适配：上游 compose（docs/docker/docker-compose.yml）禁改。
+# 官方写法的宿主机绝对路径挂载（/data/spug/...）在 Docker Desktop (WSL2 后端) 会落入
+# 虚拟机内部文件系统，改为命名卷：数据持久化且不依赖宿主路径，容器内行为不变。
+# 启动命令（RUNBOOK 同步维护）：
+#   docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml up -d
+services:
+  db:
+    volumes: !override
+      - spug-db:/var/lib/mysql
+  spug:
+    volumes: !override
+      - spug-service:/data/spug
+      - spug-repos:/data/repos
+
+volumes:
+  spug-db:
+  spug-service:
+  spug-repos:
