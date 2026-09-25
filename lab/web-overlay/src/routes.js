@@ -2,7 +2,8 @@
  * Copyright (c) OpenSpug Organization. https://github.com/openspug/spug
  * Copyright (c) <spug.dev@gmail.com>
  * Released under the AGPL-3.0 License.
- * OpsForge note: 基于 v4.0.1 原件，仅新增 Ansible 自动化菜单组与两页路由，
+ * OpsForge note: 基于 v4.0.1 原件，仅新增 Ansible 自动化菜单组与页面路由
+ * （执行/历史两页，Playbook 管理页），
  * 对比原件 diff 仅 import 行与一个菜单条目（随镜像前端构建阶段覆盖）。
  */
 import React from 'react';
@@ -29,6 +30,7 @@ import ExecTemplate from './pages/exec/template';
 import ExecTransfer from './pages/exec/transfer';
 import AnsibleExec from './pages/ansible/Exec';      // OpsForge: 实时回传
 import AnsibleJobs from './pages/ansible/Jobs';      // OpsForge: 实时回传
+import AnsiblePlaybooks from './pages/ansible/Playbooks';  // OpsForge: Playbook 管理
 import DeployApp from './pages/deploy/app';
 import DeployRepository from './pages/deploy/repository';
 import DeployRequest from './pages/deploy/request';
@@ -73,6 +75,7 @@ export default [
   {
     icon: <PlayCircleOutlined/>, title: t('Ansible 自动化'), child: [
       {title: t('执行任务'), path: '/ansible/exec', component: AnsibleExec},
+      {title: t('Playbook 管理'), path: '/ansible/playbooks', component: AnsiblePlaybooks},
       {title: t('执行历史'), path: '/ansible/jobs', component: AnsibleJobs},
     ]
   },

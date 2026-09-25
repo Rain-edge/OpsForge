@@ -2,10 +2,11 @@
  * Copyright (c) OpenSpug Organization. https://github.com/openspug/spug
  * Copyright (c) <spug.dev@gmail.com>
  * Released under the AGPL-3.0 License.
- * OpsForge：Ansible 执行页——发起 ad-hoc 任务并经 WebSocket 实时回传输出
+ * OpsForge：Ansible 执行页——发起 ad-hoc 任务并经 WebSocket 实时回传输出；
+ * 增加 Playbook 执行入口（?playbook=<id> 从管理页跳转直达）。
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Card, Input, message, Select, Space, Tag } from 'antd';
+import { Button, Card, Input, message, Radio, Select, Space, Tag } from 'antd';
 import { PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { http, X_TOKEN, t } from 'libs';
 import style from '../log.module.less';
@@ -18,9 +19,15 @@ const STATUS_COLORS = {
   failed: 'red',
 };
 
-export default function Index() {
+export default function Index(props) {
+  // Playbook 管理页可带 ?playbook=<id> 跳入，直达 playbook 执行模式
+  const params = new URLSearchParams(props.location.search);
+  const [execType, setExecType] = useState(params.get('playbook') ? 'playbook' : 'adhoc');
   const [hosts, setHosts] = useState([]);
   const [hostIds, setHostIds] = useState([]);
+  const [playbooks, setPlaybooks] = useState([]);
+  const [playbookId, setPlaybookId] = useState(
+    params.get('playbook') ? Number(params.get('playbook')) : undefined);
   const [moduleName, setModuleName] = useState('shell');
   const [moduleArgs, setModuleArgs] = useState('hostname');
   const [jobId, setJobId] = useState(null);
@@ -33,6 +40,7 @@ export default function Index() {
 
   useEffect(() => {
     http.get('/api/host/').then(res => setHosts(res)).catch(() => null);
+    http.get('/api/ansible_ops/playbooks/').then(res => setPlaybooks(res)).catch(() => null);
     return () => {
       if (socketRef.current) socketRef.current.close();
     };
@@ -76,6 +84,13 @@ export default function Index() {
 
   function handleSubmit() {
     if (hostIds.length === 0) return message.warning('请选择执行主机');
+    const body = {host_ids: hostIds, extra_vars: {}};
+    if (execType === 'playbook') {
+      if (!playbookId) return message.warning('请选择 Playbook');
+      body.playbook_id = playbookId;
+    } else {
+      body.raw_module = {name: moduleName, args: moduleArgs};
+    }
     setRunning(true);
     setLines([]);
     setStatus(null);
@@ -83,11 +98,8 @@ export default function Index() {
     // exec 响应体形如 {"data": {"job_id": n}, "error": ""}，spug 统一 http 封装
     // 自动解包 data（拦截器语义），故 then 直接拿 res.job_id；后端返回 200
     // （约定偏差 202→200 见问题 2），封装对非 200 会自行报错并 reject
-    http.post('/api/ansible_ops/exec/', {
-      host_ids: hostIds,
-      raw_module: {name: moduleName, args: moduleArgs},
-      extra_vars: {},
-    }).then(res => connect(res.job_id)).catch(() => setRunning(false));
+    http.post('/api/ansible_ops/exec/', body)
+      .then(res => connect(res.job_id)).catch(() => setRunning(false));
   }
 
   function handleKill() {
@@ -100,6 +112,13 @@ export default function Index() {
     <Card title={t('Ansible 执行')} style={{margin: 16}}>
       <Space direction="vertical" style={{width: '100%'}} size={12}>
         <Space wrap>
+          <Radio.Group value={execType}
+                       onChange={e => setExecType(e.target.value)}
+                       optionType="button" buttonStyle="solid"
+                       options={[
+                         {label: t('ad-hoc 模块'), value: 'adhoc'},
+                         {label: t('Playbook'), value: 'playbook'},
+                       ]}/>
           <Select
             mode="multiple"
             allowClear
@@ -109,18 +128,32 @@ export default function Index() {
             onChange={setHostIds}
             options={hosts.map(x => ({label: `${x.name} (${x.hostname})`, value: x.id}))}
           />
-          <Input
-            style={{width: 140}}
-            value={moduleName}
-            onChange={e => setModuleName(e.target.value)}
-            placeholder={t('模块名，如 shell')}
-          />
-          <Input
-            style={{width: 280}}
-            value={moduleArgs}
-            onChange={e => setModuleArgs(e.target.value)}
-            placeholder={t('模块参数，如 sleep 3 && hostname')}
-          />
+          {execType === 'playbook' ? (
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder={t('选择 Playbook')}
+              style={{minWidth: 300}}
+              value={playbookId}
+              onChange={setPlaybookId}
+              options={playbooks.map(x => ({label: x.name, value: x.id}))}
+            />
+          ) : (
+            <>
+              <Input
+                style={{width: 140}}
+                value={moduleName}
+                onChange={e => setModuleName(e.target.value)}
+                placeholder={t('模块名，如 shell')}
+              />
+              <Input
+                style={{width: 280}}
+                value={moduleArgs}
+                onChange={e => setModuleArgs(e.target.value)}
+                placeholder={t('模块参数，如 sleep 3 && hostname')}
+              />
+            </>
+          )}
           <Button type="primary" icon={<PlayCircleOutlined/>} loading={running} onClick={handleSubmit}>
             {t('执行')}
           </Button>
