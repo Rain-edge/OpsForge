@@ -220,4 +220,40 @@ git clone -q --bare /tmp/demo-app /data/repos/demo-app.git && rm -rf /tmp/demo-a
 | 5 | 平台 JSON 响应带空格 | `"access_token": "..."`（冒号后有空格） | 脚本提取 token/id 时模式写 `[ ]*` 兼容；错误字段可能为 `null` 而非空串 |
 | 6 | Web 终端打开主机无反应 | 单击树节点无会话 | v4.0.1 交互为**双击**叶子节点开会话（`nativeEvent.detail > 1`） |
 | 7 | 发布申请创建响应无 id | POST 成功但 body 只有 `{"data":"","error":null}` | 从申请列表反查：列表按 `-id` 排序，首个元素即最新（`GET /api/deploy/request/`） |
-| 8 | json_response 成功格式 | `{"data":"", "error":""}`；部分接口成功返回 `"error": null` | 判断成功需同时兼容两种 error 取值 |
+| 7 | 官方镜像 VOLUME /data 无法撤销 | 以官方镜像为底 COPY 二开代码，被 Docker 自动挂的匿名卷遮蔽，容器 restart 循环（supervisord 报 logs 不存在） | **全量自建镜像**（基于官方构建文件，不声明 VOLUME，代码内置镜像层），见 §9 与 lab/docker/Dockerfile 头注 |
+| 8 | docs/docker 全部文件 CRLF | 容器报 `exec /entrypoint.sh: no such file or directory`（shebang 带 \r）；core.autocrlf=true 且 .gitattributes 规则晚于文件恢复 | .gitattributes 补 `docs/docker/** text eol=lf`，rm + git checkout 重新落盘（blob 零变化） |
+| 9 | bullseye 基底 apt 装不了 | debian-security 包 404（bullseye 2026-08 结束 LTS，源残缺） | 基底切 python:3.9-slim-bookworm（仍在支持期）；USTC 源 bookworm 为 deb822 格式（sed 路径 /etc/apt/sources.list.d/debian.sources） |
+| 10 | ad-hoc 命令没有 recap | 状态判定报「退出码 0 无 recap」——recap 是 ansible-playbook 专属输出 | parse_output 双解析：recap 优先，回退逐主机结果行（`host \| SUCCESS/UNREACHABLE`）统计 |
+
+## 9. Ansible 执行引擎运行形态（2026-09-09；决策记录见 ADR-0004）
+
+平台镜像换为自建 **`opsforge-spug:4.0`**：基于官方构建文件（docs/docker/Dockerfile）改造
+——依赖同官方 + `ansible-core==2.15.13`（Python 3.9 可用的最后版本线，2.16 起要求 3.10+；
+sshpass 官方已带）+ pytest 工具链；上游代码与前端产物构建期固化（gitee v4.0.1 + CDN 包）；
+OpsForge 二开（`ansible_ops` app + settings/urls 注册副本）随镜像 COPY。
+
+```bash
+# 构建（上下文 = 仓库根，白名单见 .dockerignore）与启动：命令不变
+docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml build spug
+docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml up -d
+
+# 单元测试（仅容器内可跑；sqlite 内存库，工作区基线与镜像内 v4.0.1 不同源）
+docker exec spug sh -c 'cd /data/spug/spug_api && python -m pytest apps/ansible_ops/tests'
+
+# 执行引擎 API（鉴权同平台：x-token；nginx /api/ 前缀）
+#   POST /api/ansible_ops/exec/   {host_ids:[], raw_module:{name,args}} → 202 {job_id}
+#   GET  /api/ansible_ops/jobs/   分页列表；GET /api/ansible_ops/jobs/{id}/ 详情含 summary
+```
+
+- 执行记录 `ansible_jobs` 表；日志落容器内 `storage/ansible_logs/{job_id}.log`（spug-storage 卷持久）。
+- 并发上限 2（约定，防 4.5GB 预算打爆）：redis 计数信号量 `spug:ansible:running`（gunicorn 多进程安全），
+  单 job 内 `-f 10`。容器重启名额自然清零（redis 与 api 同容器）。
+- **风险记录（2026-09-09 决策接受）**：ansible-core 2.15.13 存在 PYSEC-2026-3458
+  （ansible-galaxy role install 参数注入 RCE，修复版 2.16+ 且 py3.9 不可用）。平台执行链路
+  不调用 ansible-galaxy，攻击面不可达。**使用约束：禁止在平台容器内执行 ansible-galaxy
+  安装第三方 role。**
+- 后续改模型的迁移流程：容器内 `makemigrations` → `docker cp` 出 → `git add -f` → rebuild
+  （migrations 被上游 .gitignore 忽略，运行时生成会导致容器重建后迁移状态漂移；构建期
+  BuildKit 跑 makemigrations 会 segfault，仅在容器运行期执行）。
+- 实测数据：7 节点 raw ping 两连跑 7/7 ok 且 summary 一致（幂等前置证明）；坏主机 →
+  job=failed + 日志含 UNREACHABLE 详情；rebuild 后回归 7/7；pytest 27/27。
