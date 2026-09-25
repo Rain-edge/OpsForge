@@ -4,3 +4,6 @@
 lab/nodes/entrypoint.sh text eol=lf
 lab/nodes/.env.example text eol=lf
 docs/docker/** text eol=lf
+# lab/ 下新增注册副本与前端 overlay，固定 LF 防 CRLF 翻转污染
+# "对原件 diff 仅注册行"的复查（Dockerfile/spug_routing.py/routes.js 等）
+lab/** text eol=lf

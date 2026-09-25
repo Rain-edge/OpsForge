@@ -6,6 +6,21 @@
 # ②上游代码与前端产物构建期内置（与官方 entrypoint 首启 clone/下载同源同版本）；
 # ③OpsForge 二开（ansible_ops app 与注册文件）随镜像 COPY。
 # 构建上下文为仓库根：docker build -f lab/docker/Dockerfile .
+# 前端构建阶段：v4.0.1 前端源码（gitee）+ OpsForge overlay（lab/web-overlay
+# 覆盖同名文件/新增页面）。工作区 spug_web 是 2.x lineage（antd 3）与运行时 v4.0.1（antd 4）
+# 不同源，不可用作改动基线。node 18 配合 package.json scripts 内置的
+# --openssl-legacy-provider（react-scripts 3.4.3 老依赖树需 --legacy-peer-deps 安装）
+FROM node:18-alpine AS web-builder
+RUN sed -i 's@dl-cdn.alpinelinux.org@mirrors.ustc.edu.cn@g' /etc/apk/repositories \
+    && apk add --no-cache git
+RUN git clone -q -b v4.0.1 https://gitee.com/openspug/spug.git /build \
+    && rm -rf /build/spug_api /build/.git
+COPY lab/web-overlay/ /build/spug_web/
+WORKDIR /build/spug_web
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install --legacy-peer-deps \
+    && npm run build
+
 # 基底 python:3.9-slim-bookworm：官方构建文件用 bullseye 是为兼容旧内核宿主（seccomp
 # 对 clone3 的拦截），本机 Docker Desktop 29.7.2 无此顾虑；bullseye 已于 2026-08 结束
 # LTS，security 源残缺 404，故切仍在支持期的 bookworm（对实验环境无行为差异）
@@ -90,7 +105,12 @@ RUN git clone -q -b v4.0.1 https://gitee.com/openspug/spug.git /data/spug \
     && tar xf /tmp/web.tar.gz -C /data/spug/spug_web/ \
     && rm -rf /tmp/web.tar.gz /data/spug/.git
 
-# OpsForge 二开：app 代码（含入库迁移文件）+ settings/urls 注册（对 v4.0.1 原件
+# OpsForge 前端产物：用 overlay 构建产物覆盖 CDN tarball 的官方产物
+# （含新增 Ansible 页面与菜单；tarball 产物先清空再覆盖，防旧哈希文件残留）
+RUN rm -rf /data/spug/spug_web/build
+COPY --from=web-builder /build/spug_web/build /data/spug/spug_web/build/
+
+# OpsForge 二开：app 代码（含入库迁移文件）+ settings/urls/routing 注册（对 v4.0.1 原件
 # diff 仅注册行）+ overrides（数据库配置 env 化）。迁移文件治理：上游 .gitignore
 # 忽略 migrations/（运行时生成会导致容器重建后迁移状态漂移），本 app 迁移文件在
 # 容器内生成后 docker cp 出来 git add -f 入库，随镜像固化。
@@ -99,6 +119,7 @@ COPY spug_api/pytest.ini /data/spug/spug_api/pytest.ini
 COPY spug_api/spug/test_settings.py /data/spug/spug_api/spug/test_settings.py
 COPY lab/docker/spug_settings.py /data/spug/spug_api/spug/settings.py
 COPY lab/docker/spug_urls.py /data/spug/spug_api/spug/urls.py
+COPY lab/docker/spug_routing.py /data/spug/spug_api/consumer/routing.py
 COPY lab/docker/spug_overrides.py /data/spug/spug_api/spug/overrides.py
 
 RUN mkdir -p /data/repos /var/log/supervisor /run/nginx \

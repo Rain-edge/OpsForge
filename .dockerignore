@@ -14,6 +14,7 @@ spug_api/spug/*
 !lab
 lab/*
 !lab/docker
+!lab/web-overlay
 !docs
 docs/*
 !docs/docker
