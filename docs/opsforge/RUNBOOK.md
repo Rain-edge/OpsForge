@@ -290,3 +290,36 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python -m pytest apps/ansible_
   （127.0.0.1），并 grep 产物特征串确认（如 `grep -c ansible/exec build/static/js/main.*.js`）。
 - kill 后残留 `ssh ... [mux]` 进程为 ansible ControlPersist 复用 master（设计行为，
   空闲后自退），非泄漏；pytest 42/42（的 27 + 本次任务 15）。
+
+## 11. Playbook 管理与 git 版本化（2026-09-13）
+
+# 数据面：REPOS_DIR/ansible_ops/playbooks/ 即 git 仓库（单仓库多文件，挂 spug-repos 卷
+# 持久），文件 {id}.yml；模型 ansible_playbooks.content 与文件互为镜像，写路径统一走
+# repo.write_and_commit（内容归一化 LF 后同时落文件与 DB）。容器内手工检查：
+#   cd /data/repos/ansible_ops/playbooks && git log --pretty=format:'%h %an %s'
+# 提交作者 = 操作人昵称（审计），提交者固定 OpsForge <opsforge@local>；镜像内无全局
+# git 身份，GitPython 必须显式传 author/committer Actor。
+# 保存/编辑/回滚前先 ansible-playbook --syntax-check（60s 超时；PYTHONWARNINGS=ignore
+# 防止 paramiko 弃用警告混入返回给前端的报错文本）。
+# 版本历史 API 每条 commit 附 git show 的 patch 文本（前端渲染实现"diff 可见"）；
+# 回滚 = 取旧 commit 的 blob 内容重新提交为新 commit（历史线性，不丢后续记录）。
+#   GET  /api/ansible_ops/playbooks/                列表/创建（POST）
+#   GET/PUT/DELETE /api/ansible_ops/playbooks/{id}/ 详情/编辑/删除
+#   GET  /api/ansible_ops/playbooks/{id}/versions/  commit 列表（含 patch）
+#   POST /api/ansible_ops/playbooks/{id}/rollback/  body {commit}
+# exec 联动：POST /api/ansible_ops/exec/ 的 playbook_id 即 Playbook.id，执行命令
+# ansible-playbook -i <动态inventory> -f 10 /data/repos/ansible_ops/playbooks/{id}.yml；
+# 排队期间 Playbook 被删（FK SET_NULL）→ 任务落 failed，summary.reason 可读。
+# 前端：/ansible/playbooks 管理页（ACEditor yaml 编辑、版本抽屉含 diff/回滚）；
+# /ansible/exec 页执行类型切换，/ansible/exec?playbook=<id> 从管理页直达。
+# 踩坑：
+# - GitPython repo.git.show() 字符串输出会去末尾换行，字节级内容必须走对象 API
+#   （commit.tree / rel → data_stream.read()）。
+# - Python 3.9 Path.write_text 无 newline 参数（3.10 才有），且其语义是"不翻译"
+#   而非归一化，CRLF 要手动 replace；spug JsonParser 会 strip 首尾，API 入库内容无尾换行。
+# - git 仓库根就是 playbooks/ 目录本身：git add 用绝对路径，show sha:path 用仓库相对路径。
+# - 迁移文件被上游 .gitignore(migrations/) 忽略：提交用 git add -f（T1 先例）。
+# 实测记录（2026-09-14 凌晨）：smoke-ping 三版两改 → 4 commits
+# （作者"管理员"）→ diff 渲染正确 → 回滚 76a810b 内容字节级回退；坏 YAML 拒保存
+# 且 toast 展示 ansible ERROR 原文；管理页「执行」直达 exec 页联动 Job#24 真实
+# ping web-01 成功（recap ok=2 failed=0，WS 实时回传正常）。pytest 77/77 容器内全绿。
