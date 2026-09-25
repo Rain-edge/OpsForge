@@ -4,6 +4,8 @@
 # OpsForge：Ansible 执行引擎（subprocess 直跑，并发上限 2）
 from django.conf import settings
 from django.db import close_old_connections
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 from apps.ansible_ops.models import AnsibleJob
 from apps.ansible_ops.inventory import generate_inventory
 from pathlib import Path
@@ -12,8 +14,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 from libs import human_datetime
 
 
@@ -24,6 +28,10 @@ from libs import human_datetime
 MAX_JOBS = 2
 RUNNING_KEY = 'spug:ansible:running'
 JOB_TIMEOUT = 1800
+# kill 链路：pid 与终止标记走 redis——kill 视图与 executor 线程可能
+# 位于不同 gunicorn worker 进程（start-api.sh -w 2），跨进程只能借 redis 传递
+PID_KEY = 'spug:ansible:pid:{}'
+KILL_KEY = 'spug:ansible:killed:{}'
 
 _pool = ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix='ansible_ops')
 LOG_DIR = Path(settings.BASE_DIR) / 'storage' / 'ansible_logs'
@@ -43,6 +51,51 @@ ADHOC_RE = re.compile(
 
 def submit_job(job_id):
     _pool.submit(run_job, job_id)
+
+
+def group_name(job_id):
+    """约定：Channels layer group `ansible-job-{job_id}`（consumer 与 executor 共用）。"""
+    return f'ansible-job-{job_id}'
+
+
+def _push_event(job_id, event):
+    # 推送是旁路：无观众（daphne 未起/组内空）或 layer 异常都不能影响执行与落库
+    try:
+        layer = get_channel_layer()
+        async_to_sync(layer.group_send)(group_name(job_id), event)
+    except Exception:
+        pass
+
+
+def _rds():
+    try:
+        from django_redis import get_redis_connection
+        return get_redis_connection()
+    except Exception:
+        return None
+
+
+def _save_final(job_id, status, summary_dict):
+    """终态落库并广播 done 事件（约定：终态事件一次）。"""
+    job = AnsibleJob.objects.filter(pk=job_id).first()
+    if not job:
+        return
+    job.status = status
+    job.summary = json.dumps(summary_dict)
+    job.finished_at = human_datetime()
+    job.save()
+    _push_event(job_id, {'type': 'done', 'status': status, 'summary': summary_dict})
+
+
+def _on_timeout(job_id, proc):
+    # 看门狗：保留原 subprocess.run(timeout=JOB_TIMEOUT) 的强杀语义，理由记为 timeout
+    rds = _rds()
+    if rds:
+        rds.set(KILL_KEY.format(job_id), 'timeout', ex=120)
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        pass
 
 
 def parse_recap(output):
@@ -104,7 +157,16 @@ def run_job(job_id):
     log_path = LOG_DIR / f'{job_id}.log'
     work_dir = Path(tempfile.mkdtemp(prefix=f'ansible_ops_{job_id}_'))
     log = None
+    proc = None
+    rds = _rds()
     try:
+        # pending 排队期间被终止（kill 视图对排队任务预置标记）：不执行直接落终态；
+        # 理由取标记值（killed/timeout），不硬编码，防误记
+        killed = rds.get(KILL_KEY.format(job_id)) if rds else None
+        if killed:
+            rds.delete(KILL_KEY.format(job_id))
+            _save_final(job_id, AnsibleJob.STATUS_FAILED, {'reason': killed.decode()})
+            return
         # views 层提交前已在 redis 占用并发名额，本函数 finally 释放；
         # get 放入 try：job 被并发删除等异常也走统一落库，不裸抛进线程池
         job = AnsibleJob.objects.get(pk=job_id)
@@ -126,46 +188,71 @@ def run_job(job_id):
         log.write(f'# started: {human_datetime()}\n\n')
         log.flush()
         env = dict(os.environ, ANSIBLE_HOST_KEY_CHECKING='False')
-        with log_path.open('a', encoding='utf-8') as output:
-            proc = subprocess.run(
-                command, stdout=output, stderr=subprocess.STDOUT,
-                timeout=JOB_TIMEOUT, env=env)
+        # 入口检查与置 running 之间存在竞窗（kill 视图按 pending 预置标记），
+        # Popen 前最后复核一次，防止标记刚置上就让 ansible 跑起来
+        if rds and rds.get(KILL_KEY.format(job.id)):
+            rds.delete(KILL_KEY.format(job.id))
+            _save_final(job.id, AnsibleJob.STATUS_FAILED, {'reason': 'killed'})
+            return
+        # 逐行流式：Popen 代替 run，行进途中同步写日志与 WS 推送；
+        # start_new_session 让 ansible 及其 ssh 子进程独立成组，kill 按组终止
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors='replace', env=env, start_new_session=True)
+        if rds:
+            rds.set(PID_KEY.format(job.id), proc.pid, ex=JOB_TIMEOUT + 120)
+        timer = threading.Timer(JOB_TIMEOUT, _on_timeout, args=(job.id, proc))
+        timer.start()
+        try:
+            # readline 迭代而非 `for line in stdout`：后者受缓冲影响做不到逐行实时
+            for line in iter(proc.stdout.readline, ''):
+                log.write(line)
+                log.flush()
+                _push_event(job.id, {'type': 'log', 'line': line.rstrip('\n'), 'ts': human_datetime()})
+            returncode = proc.wait()
+        finally:
+            timer.cancel()
+        killed = rds.get(KILL_KEY.format(job.id)) if rds else None
+        if rds:
+            rds.delete(KILL_KEY.format(job.id))
         text = log_path.read_text(encoding='utf-8', errors='replace')
         recap = parse_output(text)
-        if recap is None:
-            job.status = AnsibleJob.STATUS_FAILED
-            job.summary = json.dumps({'error': f'ansible 退出码 {proc.returncode}，无 recap 输出'})
+        if killed and returncode < 0:
+            # 仅死于信号（kill SIGTERM=-15 / 看门狗 SIGKILL=-9）才采信标记；
+            # 自然退出时的迟到标记按常规结果落库，防止把真实结果改写为 killed
+            _save_final(job.id, AnsibleJob.STATUS_FAILED, {'reason': killed.decode()})
+        elif recap is None:
+            _save_final(
+                job.id, AnsibleJob.STATUS_FAILED,
+                {'error': f'ansible 退出码 {returncode}，无 recap 输出'})
         elif recap['failed'] == 0 and recap['unreachable'] == 0:
-            job.status = AnsibleJob.STATUS_SUCCESS
-            job.summary = json.dumps(recap)
+            _save_final(job.id, AnsibleJob.STATUS_SUCCESS, recap)
         elif recap['ok'] > 0:
-            job.status = AnsibleJob.STATUS_PARTIAL
-            job.summary = json.dumps(recap)
+            _save_final(job.id, AnsibleJob.STATUS_PARTIAL, recap)
         else:
-            job.status = AnsibleJob.STATUS_FAILED
-            job.summary = json.dumps(recap)
-        job.finished_at = human_datetime()
-        job.save()
+            _save_final(job.id, AnsibleJob.STATUS_FAILED, recap)
     except Exception as e:
-        # 头部句柄偏移停在写头部处，异常必须追加在 ansible 输出之后而非覆盖
-        if log is not None:
-            log.seek(0, os.SEEK_END)
+        # Popen 之后的任何异常：防御性终止子进程组，防孤儿 ansible 继续对真实
+        # 主机执行并占用 fork/内存配额（PID_KEY 随 finally 清除，孤儿将不可 kill）
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        # 单句柄顺序写：异常说明自然追加在 ansible 输出之后（原双句柄 seek 追加随流式化消除）
         if log is None:
             log = log_path.open('a', encoding='utf-8')
         log.write(f'\n# exception: {e}\n')
-        try:
-            job = AnsibleJob.objects.get(pk=job_id)
-        except AnsibleJob.DoesNotExist:
-            job = None
-        if job:
-            job.status = AnsibleJob.STATUS_FAILED
-            job.summary = json.dumps({'error': str(e)})
-            job.finished_at = human_datetime()
-            job.save()
+        _save_final(job_id, AnsibleJob.STATUS_FAILED, {'error': str(e)})
     finally:
         if log is not None:
             log.close()
         shutil.rmtree(work_dir, ignore_errors=True)
+        if rds:
+            try:
+                rds.delete(PID_KEY.format(job_id))
+            except Exception:
+                pass
         try:
             from django_redis import get_redis_connection
             get_redis_connection().decr(RUNNING_KEY)

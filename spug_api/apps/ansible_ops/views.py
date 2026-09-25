@@ -1,18 +1,20 @@
 # Copyright: (c) OpenSpug Organization. https://github.com/openspug/spug
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
-# OpsForge：Ansible 执行引擎 API
+# OpsForge：Ansible 执行引擎 API；实时回传增加任务终止
 from django.views.generic import View
 from django.core.paginator import Paginator
 from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, auth
 from apps.ansible_ops.models import AnsibleJob
-from apps.ansible_ops.executor import submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY
+from apps.ansible_ops.executor import (
+    submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY, PID_KEY, KILL_KEY)
 from apps.account.utils import has_host_perm
 from apps.host.models import Host
 import json
 import os
 import re
+import signal
 
 
 class ExecView(View):
@@ -64,10 +66,45 @@ class ExecView(View):
             except Exception:
                 rds.decr(RUNNING_KEY)
                 raise
-            response = json_response({'job_id': job.id})
-            response.status_code = 202
-            return response
+            # 约定原定 202 Accepted，实际返回 200：spug 前端统一 http 封装将非 200
+            # 一律按失败弹出（libs/http.js handleResponse），202 会造成前端误报。
+            # 偏差已记录待确认（问题 2）
+            return json_response({'job_id': job.id})
         return json_response(error=error)
+
+
+class JobKillView(View):
+    """终止任务（约定：POST /api/ansible_ops/jobs/{id}/kill/ → job 置 failed(reason=killed)）。
+
+    running 任务按 redis 中的 pid 终止进程组（跨 gunicorn worker 进程）；
+    pending 任务在队列中尚未起进程，预置终止标记由 executor 启动时检查跳过。
+    实际落终态的始终是 executor 线程（单点写库，避免双写竞态）。
+    """
+    @auth('ansible_ops.exec')
+    def post(self, request, pk):
+        job = AnsibleJob.objects.filter(pk=pk, user=request.user).first()
+        if not job:
+            return json_response(error='任务不存在')
+        if job.status not in (AnsibleJob.STATUS_PENDING, AnsibleJob.STATUS_RUNNING):
+            return json_response(error='任务已结束，无需终止')
+        rds = get_redis_connection()
+        if job.status == AnsibleJob.STATUS_PENDING:
+            # 排队中无进程可杀：预置标记，executor 启动/开跑前检查并跳过。
+            # TTL 需 ≥ 最坏在队等待（MAX_JOBS=2 × JOB_TIMEOUT）；executor 查标记
+            # 与置 running 之间有竞窗，置标记后回读复核，已开跑则继续走进程组终止
+            rds.set(KILL_KEY.format(pk), 'killed', ex=7200)
+            job.refresh_from_db()
+            if job.status != AnsibleJob.STATUS_RUNNING:
+                return json_response()
+        pid = rds.get(PID_KEY.format(pk))
+        if not pid:
+            return json_response(error='任务进程尚未就绪，请稍后重试')
+        try:
+            os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+        except ProcessLookupError:
+            return json_response(error='任务进程已退出，请刷新查看结果')
+        rds.set(KILL_KEY.format(pk), 'killed', ex=120)
+        return json_response()
 
 
 class JobListView(View):

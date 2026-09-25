@@ -83,16 +83,37 @@ def make_job(user, host):
         raw_module=json.dumps({'name': 'ping'}), extra_vars='{}')
 
 
-def run_with_output(monkeypatch, tmp_path, job, recap_text=None, returncode=0):
-    """mock subprocess.run：把 recap 文本写进日志文件，模拟 ansible 真实输出。"""
+def run_with_output(monkeypatch, tmp_path, job, recap_text=None, returncode=0, events=None,
+                    on_event=None):
+    """mock subprocess.Popen（起逐行流式）：把 recap 文本按行喂给 stdout 模拟
+    ansible 真实输出；events 传 list 时捕获 _push_event 事件流，on_event 事件回调
+    供模拟中途注入 redis 状态（如 kill 标记）。"""
     monkeypatch.setattr(executor, 'LOG_DIR', tmp_path)
 
-    def fake_run(command, stdout=None, **kwargs):
-        if recap_text is not None:
-            stdout.write(recap_text)
-        return type('Proc', (), {'returncode': returncode})()
+    def fake_push(job_id, event):
+        if events is not None:
+            events.append((job_id, event))
+        if on_event is not None:
+            on_event(job_id, event)
 
-    monkeypatch.setattr(executor.subprocess, 'run', fake_run)
+    monkeypatch.setattr(executor, '_push_event', fake_push)
+
+    class FakeProc:
+        pid = 424242
+
+        def __init__(self):
+            # 类体读不到闭包变量，赋值须放方法内；run_job 以 readline 迭代 stdout
+            self.returncode = returncode
+            self._lines = recap_text.splitlines(keepends=True) if recap_text is not None else []
+            self.stdout = self
+
+        def readline(self):
+            return self._lines.pop(0) if self._lines else ''
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(executor.subprocess, 'Popen', lambda *a, **kw: FakeProc())
     executor.run_job(job.id)
     job.refresh_from_db()
     return job
@@ -148,3 +169,117 @@ def test_run_job_writes_log_file(user, host, monkeypatch, tmp_path):
     content = log_file.read_text(encoding='utf-8')
     assert f'AnsibleJob {job.id}' in content
     assert 'command' in content
+
+
+# ---- 实时回传与 kill 链路 ----
+
+@pytest.mark.django_db
+def test_run_job_streams_log_events(user, host, monkeypatch, tmp_path):
+    # 约定：逐行 log 事件 + 终态一次 done 事件（头部 3 行元信息不推送）
+    events = []
+    job = run_with_output(monkeypatch, tmp_path, make_job(user, host), ADHOC_OK, events=events)
+    types = [ev['type'] for _, ev in events]
+    assert all(jid == job.id for jid, _ in events)
+    assert types.count('log') == len(ADHOC_OK.splitlines())
+    first_log = events[0][1]
+    assert first_log['line'] == ADHOC_OK.splitlines()[0]
+    assert 'ts' in first_log
+    dones = [ev for _, ev in events if ev['type'] == 'done']
+    assert len(dones) == 1
+    assert dones[0]['status'] == AnsibleJob.STATUS_SUCCESS
+    assert dones[0]['summary'] == {'ok': 2, 'changed': 0, 'unreachable': 0, 'failed': 0}
+
+
+@pytest.mark.django_db
+def test_run_job_skipped_when_killed_pending(user, host, monkeypatch, tmp_path):
+    # pending 排队期间被终止：不执行直接落 failed(reason=killed)
+    job = make_job(user, host)
+    rds = _redis()
+    rds.set(executor.KILL_KEY.format(job.id), 'killed', ex=60)
+    try:
+        events = []
+        run_with_output(monkeypatch, tmp_path, job, None, events=events)
+        job.refresh_from_db()
+        assert job.status == AnsibleJob.STATUS_FAILED
+        assert json.loads(job.summary) == {'reason': 'killed'}
+        assert job.finished_at
+        assert [ev['type'] for _, ev in events] == ['done']
+    finally:
+        rds.delete(executor.KILL_KEY.format(job.id))
+
+
+@pytest.mark.django_db
+def test_run_job_killed_flag_beats_recap(user, host, monkeypatch, tmp_path):
+    # 模拟 kill 在执行中途到达：首个 log 事件后置标记，此后输出只是残片。
+    # returncode=-15 对应真实 SIGTERM 组死亡，executor 仅对信号死亡采信标记
+    job = make_job(user, host)
+    rds = _redis()
+
+    def inject_kill(job_id, event):
+        if event['type'] == 'log':
+            rds.set(executor.KILL_KEY.format(job.id), 'killed', ex=60)
+
+    try:
+        run_with_output(monkeypatch, tmp_path, job, RECAP_OK, returncode=-15, on_event=inject_kill)
+        job.refresh_from_db()
+        assert job.status == AnsibleJob.STATUS_FAILED
+        assert json.loads(job.summary) == {'reason': 'killed'}
+    finally:
+        rds.delete(executor.KILL_KEY.format(job.id))
+
+
+@pytest.mark.django_db
+def test_run_job_ignores_late_kill_flag_on_natural_exit(user, host, monkeypatch, tmp_path):
+    # 自然退出（returncode >= 0）后到达的迟到 kill 标记不采信：
+    # 真实结果（recap 统计）不被改写为 killed
+    job = make_job(user, host)
+    rds = _redis()
+
+    def inject_late_kill(job_id, event):
+        if event['type'] == 'log':
+            rds.set(executor.KILL_KEY.format(job.id), 'killed', ex=60)
+
+    try:
+        run_with_output(monkeypatch, tmp_path, job, RECAP_OK, returncode=0, on_event=inject_late_kill)
+        job.refresh_from_db()
+        assert job.status == AnsibleJob.STATUS_SUCCESS
+        assert json.loads(job.summary) == {'ok': 2, 'changed': 1, 'unreachable': 0, 'failed': 0}
+    finally:
+        rds.delete(executor.KILL_KEY.format(job.id))
+
+
+@pytest.mark.django_db
+def test_run_job_pending_timeout_flag(user, host, monkeypatch, tmp_path):
+    # pending 分支预置 timeout 标记：不执行直接落 failed(reason=timeout)，
+    # 理由取标记值而非硬编码 killed（看门狗 _on_timeout 的置标记另有单测）
+    job = make_job(user, host)
+    rds = _redis()
+    rds.set(executor.KILL_KEY.format(job.id), 'timeout', ex=60)
+    try:
+        run_with_output(monkeypatch, tmp_path, job, None)
+        job.refresh_from_db()
+        assert job.status == AnsibleJob.STATUS_FAILED
+        assert json.loads(job.summary) == {'reason': 'timeout'}
+    finally:
+        rds.delete(executor.KILL_KEY.format(job.id))
+
+
+def test_on_timeout_sets_flag_and_kills_process_group(monkeypatch):
+    # 看门狗路径：置 timeout 标记 + 对进程组 SIGKILL
+    import signal as signal_mod
+    rds = _redis()
+    killed = []
+    monkeypatch.setattr(executor.os, 'getpgid', lambda pid: pid)
+    monkeypatch.setattr(executor.os, 'killpg', lambda pgid, sig: killed.append((pgid, sig)))
+    proc = type('P', (), {'pid': 424242})()
+    executor._on_timeout(999, proc)
+    try:
+        assert rds.get(executor.KILL_KEY.format(999)) == b'timeout'
+        assert killed == [(424242, signal_mod.SIGKILL)]
+    finally:
+        rds.delete(executor.KILL_KEY.format(999))
+
+
+def _redis():
+    from django_redis import get_redis_connection
+    return get_redis_connection()
