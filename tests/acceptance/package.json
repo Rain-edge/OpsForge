@@ -6,6 +6,7 @@
   "scripts": {
     "test": "playwright test",
     "test:infra": "playwright test infra/",
+    "test:ans": "playwright test ans/",
     "report": "playwright show-report"
   },
   "devDependencies": {
