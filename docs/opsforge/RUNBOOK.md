@@ -3,14 +3,31 @@
 > OpsForge = 基于 [openspug/spug](https://github.com/openspug/spug) v4.0.1 二次开发的自动化运维平台实验环境。
 > 本手册记录平台从零到可登录运行的全部操作与实测踩坑。基线建立日：2026-09-01。
 
+## 目录
+
+| 章节  | 内容                                                              | 模块          |
+| ----- | ----------------------------------------------------------------- | ------------- |
+| §0–§7 | 平台基线：环境 / 仓库 / 启动 / 初始化 / 登录 / 停启 / 踩坑 / 实测 | 环境基线      |
+| §8    | 节点实验环境（7 台 labnode）                                      | 节点实验环境  |
+| §9    | Ansible 执行引擎运行形态                                          | 执行引擎      |
+| §10   | 实时回传、终止与前端页面                                          | 实时回传      |
+| §11   | Playbook 管理与 git 版本化                                        | Playbook 管理 |
+| §12   | Playbook 库与幂等验证                                             | Playbook 库   |
+| §13   | 批量巡检报表                                                      | 巡检报表      |
+| §14   | 告警闭环自愈                                                      | 告警自愈      |
+| §15   | 网络探测与设备备份                                                | 网络模块      |
+| §16   | 收尾：产物索引与最终回归                                          | 文档收尾      |
+
+新人从零跑通的最短路径已收敛到仓库根 [README](../../README.md)「快速开始」；本手册是完整运行手册与排查依据。
+
 ## 0. 环境前提
 
-| 项 | 要求 | 本机实测 |
-|---|---|---|
-| 宿主 | Windows + Docker Desktop（WSL2 后端） | Docker Engine 29.7.2 |
-| WSL2 内存 | `~/.wslconfig` 限 6GB（`memory=6GB`、`processors=4`） | 与 CloudForge 的 k3d 集群错峰运行 |
-| 镜像加速 | `~/.docker/daemon.json` 已配国内 mirror（docker.1panel.live 等） | 拉镜像无需另配 |
-| 端口 | 宿主 80 空闲（被占用见 §6 坑 4） | 实测空闲 |
+| 项        | 要求                                                             | 本机实测                          |
+| --------- | ---------------------------------------------------------------- | --------------------------------- |
+| 宿主      | Windows + Docker Desktop（WSL2 后端）                            | Docker Engine 29.7.2              |
+| WSL2 内存 | `~/.wslconfig` 限 6GB（`memory=6GB`、`processors=4`）            | 与 CloudForge 的 k3d 集群错峰运行 |
+| 镜像加速  | `~/.docker/daemon.json` 已配国内 mirror（docker.1panel.live 等） | 拉镜像无需另配                    |
+| 端口      | 宿主 80 空闲（被占用见 §6 坑 4）                                 | 实测空闲                          |
 
 ## 1. 仓库与上游基线
 
@@ -23,7 +40,7 @@ git remote add upstream https://ghfast.top/https://github.com/openspug/spug.git
 # 拉取上游全部历史与 tag（Windows git 需关闭 schannel 吊销检查）
 git -c http.schannelCheckRevoke=false fetch upstream --tags
 
-# 工作区对齐基线（内部流程文档与任务记录已被 .git/info/exclude 排除，不受影响）
+# 工作区对齐基线（本地流程文档不进仓库，不受影响）
 git reset --hard upstream/master
 ```
 
@@ -78,13 +95,13 @@ docker exec spug init_spug admin spug.cc
 
 实测可用的页面（2026-09-01，浏览器逐一点验）：
 
-| 菜单 | 路由 | 说明 |
-|---|---|---|
-| 工作台 | `/home` | 登录落地页 |
-| **主机管理** | `/host` | 顶部含 **Web 终端**按钮（在线终端入口）；主机列表待节点实验环境纳管 |
-| **批量执行** | `/exec/task` | 子菜单：执行任务/模板管理/文件分发 |
-| **监控中心** | `/monitor` | 监控任务列表 |
-| **报警中心** | `/alarm/alarm` | 子菜单：报警历史/联系人/联系组 |
+| 菜单         | 路由           | 说明                                                                |
+| ------------ | -------------- | ------------------------------------------------------------------- |
+| 工作台       | `/home`        | 登录落地页                                                          |
+| **主机管理** | `/host`        | 顶部含 **Web 终端**按钮（在线终端入口）；主机列表待节点实验环境纳管 |
+| **批量执行** | `/exec/task`   | 子菜单：执行任务/模板管理/文件分发                                  |
+| **监控中心** | `/monitor`     | 监控任务列表                                                        |
+| **报警中心** | `/alarm/alarm` | 子菜单：报警历史/联系人/联系组                                      |
 
 命令行验证登录接口（**注意必须带 `type` 字段**，见 §6 坑 3）：
 
@@ -109,23 +126,29 @@ docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml 
 
 ## 6. 踩坑清单（实测）
 
-| # | 坑 | 现象 | 处置 |
-|---|---|---|---|
-| 1 | 首次 `init_spug` 偶发报错 | `UnboundLocalError: local variable 'r' referenced before assignment`（Python 3.9 `sre_compile` 内部报错） | **重跑一次即可成功**；首跑表已建好（二次跑提示 No migrations to apply），推测为 CPython 3.9 边角 bug 的首次编译触发，未深究根因 |
-| 2 | GitHub 直连不稳 | fetch/clone 卡住或失败 | remote 全部走 `https://ghfast.top/` 前缀镜像；git 命令加 `-c http.schannelCheckRevoke=false` |
-| 3 | 登录接口报 `Column 'type' cannot be null` | curl 登录 500 | 登录接口要求 body 带 `"type":"default"`（普通登录）或 `"ldap"`；漏传即触发登录记录表非空约束 |
-| 4 | 宿主 80 端口被占 | spug 容器起不来 | 改 override 中端口映射（如 `"8000:80"`），浏览器地址同步改 |
-| 5 | 绝对路径挂载不落地 | `/data/spug/...` 落进 Docker VM 内部，Windows 侧不可见 | 已用命名卷替代（见 §2） |
-| 6 | 容器运行代码 ≠ 本仓库代码 | 官方镜像首启从 gitee 拉 **v4.0.1** 代码运行 | 本次任务仅验证平台可运行；**让容器跑本仓库二开代码是执行引擎的前置工作**（挂载或自建镜像） |
+| #   | 坑                                                                                               | 现象                                                                                                                                                              | 处置                                                                                                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 首次 `init_spug` 偶发报错                                                                        | `UnboundLocalError: local variable 'r' referenced before assignment`（Python 3.9 `sre_compile` 内部报错）                                                         | **重跑一次即可成功**；首跑表已建好（二次跑提示 No migrations to apply），推测为 CPython 3.9 边角 bug 的首次编译触发，未深究根因                                                                           |
+| 2   | GitHub 直连不稳                                                                                  | fetch/clone 卡住或失败                                                                                                                                            | remote 全部走 `https://ghfast.top/` 前缀镜像；git 命令加 `-c http.schannelCheckRevoke=false`                                                                                                              |
+| 3   | 登录接口报 `Column 'type' cannot be null`                                                        | curl 登录 500                                                                                                                                                     | 登录接口要求 body 带 `"type":"default"`（普通登录）或 `"ldap"`；漏传即触发登录记录表非空约束                                                                                                              |
+| 4   | 宿主 80 端口被占                                                                                 | spug 容器起不来                                                                                                                                                   | 改 override 中端口映射（如 `"8000:80"`），浏览器地址同步改                                                                                                                                                |
+| 5   | 绝对路径挂载不落地                                                                               | `/data/spug/...` 落进 Docker VM 内部，Windows 侧不可见                                                                                                            | 已用命名卷替代（见 §2）                                                                                                                                                                                   |
+| 6   | 容器运行代码 ≠ 本仓库代码                                                                        | 官方镜像首启从 gitee 拉 **v4.0.1** 代码运行                                                                                                                       | 本次任务仅验证平台可运行；**让容器跑本仓库二开代码是执行引擎的前置工作**（挂载或自建镜像）                                                                                                   |
+| 7   | 空库首次 `init_spug` 报 `(2002, "Can't connect to server on 'db' (115)")`                        | `down -v` 删卷后 `up` 完**立刻**执行 `docker exec spug init_spug`                                                                                                 | mariadb 空数据目录初始化需时间（秒级到数十秒），初始化窗口内连不上；先等 `docker exec spug-db mysqladmin ping -uroot -p*** ` 返回 alive 再 init（README 快速开始已加该等待步骤；2026-10-02 从零重建实测） |
+| 8   | 空卷首跑 `import_playbooks.sh` 失败：`Could not find the file /data/repos/ansible_ops/playbooks` | `docker cp` 要求容器内目标父目录已存在，全新 spug-repos 卷上空目录不存在                                                                                          | 脚本已加 `docker exec spug mkdir -p`（2026-10-02 修复）；此坑只在真实空卷首跑暴露，历史环境目录早已存在                                                                                                   |
+| 9   | `docker cp` 报 `GetFileAttributesEx C:\c: The system cannot find the file specified`             | 本机 Git Bash 关闭了 MSYS 参数转换时，`/c/Users/...` 原样交给 docker.exe                                                                                          | 脚本内统一 `to_win_path()`（`cygpath -w` 归一，Linux 透传）；已应用到 `import_playbooks.sh` / `setup_heal_demo.sh`（2026-10-02 修复）                                                                     |
+| 10  | 从零重建后自愈演示不可一键恢复                                                                   | 检测任务与自愈规则原为手工创建，`down -v` 后丢失                                                                                                                  | 新增 `lab/scripts/setup_heal_demo.sh`（幂等：建检测任务 + 自愈规则 + heal_webhook.env + 拉起 mock 接收端），重建后一条命令恢复演示态（2026-10-02 新增）                                                   |
+| 11  | 从零重建后网络设备备份**静默失败**                                                               | `net.log` 只有 `WARNING 备份 r1 失败: ValueError: 设备 r1 口令未配置`；UI 无红点、e2e 备份 diff 用例超时                                                          | `storage/net_devices.env` 口令文件是手工建的，重建即丢；已并入 `setup_heal_demo.sh` 一并生成（0600），并给出缺 OPS_PASSWORD 时的显式警告（2026-10-02 修复）                                               |
+| 12  | 从零重建后 4 条验收用例失败                                                                      | AC-ANS-07 找不到 `smoke-ping` Playbook；AC-E2E-01 四册未部署过（首跑 changed≠0）；AC-INFRA-06 发布源 `demo-app.git` 不存在；AC-E2E-04 备份 diff 无数据（同坑 11） | ① `smoke-ping.yml` 入 `lab/playbooks/`（随 import 入库）；② 新增 `lab/scripts/setup_demo_state.sh`（建 demo-app.git + 部署四册 + 触发巡检/探测）；③ 快速开始补步骤 6/7/8（2026-10-02 修复）               |
 
 ## 7. 实测数据（2026-09-01）
 
-| 项 | 值 |
-|---|---|
+| 项           | 值                                                                        |
+| ------------ | ------------------------------------------------------------------------- |
 | 平台内存占用 | spug 443.7 MiB + spug-db 93.4 MiB ≈ **537 MiB**（内存预算 2GB，余量充足） |
-| 镜像体积 | spug-service:4.0 = 629MB，mariadb:10.8 = 370MB |
-| 首启代码准备 | 约 10 秒（gitee clone + CDN 前端包） |
-| 上游规模 | 640 提交 / 315 个跟踪文件 |
+| 镜像体积     | spug-service:4.0 = 629MB，mariadb:10.8 = 370MB                            |
+| 首启代码准备 | 约 10 秒（gitee clone + CDN 前端包）                                      |
+| 上游规模     | 640 提交 / 315 个跟踪文件                                                 |
 
 ## 8. 节点实验环境（2026-09-06）
 
@@ -134,15 +157,15 @@ Ansible/巡检/自愈/Playbook 部署的靶场。设计取舍见 [ADR-0002](adr/
 
 ### 8.1 节点清单（约定固定）
 
-| 节点 | 分组 | 角色 | 宿主 SSH 端口 |
-|---|---|---|---|
-| web-01 | web | Nginx（兼 LB/Keepalived 实验） | 2221 |
-| web-02 | web | Nginx（兼 LB/Keepalived 实验） | 2222 |
-| db-01 | db | MySQL 主 | 2223 |
-| db-02 | db | MySQL 从 | 2224 |
-| cache-01 | cache | Redis master | 2225 |
-| cache-02 | cache | Redis replica | 2226 |
-| cache-03 | cache | Redis sentinel | 2227 |
+| 节点     | 分组  | 角色                           | 宿主 SSH 端口 |
+| -------- | ----- | ------------------------------ | ------------- |
+| web-01   | web   | Nginx（兼 LB/Keepalived 实验） | 2221          |
+| web-02   | web   | Nginx（兼 LB/Keepalived 实验） | 2222          |
+| db-01    | db    | MySQL 主                       | 2223          |
+| db-02    | db    | MySQL 从                       | 2224          |
+| cache-01 | cache | Redis master                   | 2225          |
+| cache-02 | cache | Redis replica                  | 2226          |
+| cache-03 | cache | Redis sentinel                 | 2227          |
 
 - 节点内统一 SSH 端口 22（平台纳管经 docker 网络直连 `节点名:22`）；宿主映射端口仅用于人工验收。
 - 镜像 `labnode:1.0`：自建（debian:12-slim + systemd + openssh-server + python3 + 排障工具），构建文件 `lab/nodes/Dockerfile`。
@@ -197,33 +220,33 @@ git clone -q --bare /tmp/demo-app /data/repos/demo-app.git && rm -rf /tmp/demo-a
 
 ### 8.5 实测数据（2026-09-06）
 
-| 项 | 值 |
-|---|---|
-| 节点运行状态 | 7/7 running，`systemctl is-active ssh` 全 active，hostname 正确 |
-| 宿主端口 2221-2227 | 全部 open（/dev/tcp 探测） |
-| SSH 登录 | 平台容器 paramiko 密码登录 7/7 成功；人工 ssh 可登录 |
-| 平台纳管 | 7/7（web×2 / db×2 / cache×3 分组正确，状态全部"已验证"） |
-| 批量执行 | `hostname && free -m` 7/7 成功，耗时 0.4s |
-| Web 终端 | 双击主机打开会话，`ops@web-01:~$` 提示符 + 命令回显正常 |
-| 应用发布 | 申请 id=5 发布成功，产物 2/2 节点落地 |
-| 节点内存 | 每台 8.4~10.2 MiB，7 台合计 ≈62 MiB（限额 256MiB/台生效） |
-| **总内存** | 平台 549 MiB（spug 455.6 + db 93.4）+ 节点 62 MiB ≈ **611 MiB**，预算 4.5GB 内（内存预算降级条款未触发） |
+| 项                 | 值                                                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------------- |
+| 节点运行状态       | 7/7 running，`systemctl is-active ssh` 全 active，hostname 正确                                          |
+| 宿主端口 2221-2227 | 全部 open（/dev/tcp 探测）                                                                               |
+| SSH 登录           | 平台容器 paramiko 密码登录 7/7 成功；人工 ssh 可登录                                                     |
+| 平台纳管           | 7/7（web×2 / db×2 / cache×3 分组正确，状态全部"已验证"）                                                 |
+| 批量执行           | `hostname && free -m` 7/7 成功，耗时 0.4s                                                                |
+| Web 终端           | 双击主机打开会话，`ops@web-01:~$` 提示符 + 命令回显正常                                                  |
+| 应用发布           | 申请 id=5 发布成功，产物 2/2 节点落地                                                                    |
+| 节点内存           | 每台 8.4~10.2 MiB，7 台合计 ≈62 MiB（限额 256MiB/台生效）                                                |
+| **总内存**         | 平台 549 MiB（spug 455.6 + db 93.4）+ 节点 62 MiB ≈ **611 MiB**，预算 4.5GB 内（内存预算降级条款未触发） |
 
 ### 8.6 踩坑清单
 
-| # | 坑 | 现象 | 处置 |
-|---|---|---|---|
-| 1 | 容器内 `free -m` 不是节点内存 | 显示 WSL2 宿主的 5.9GB | cgroup 限额不改变 free 视图；巡检报表中节点内存改读 `/sys/fs/cgroup/memory.current`（cgroup v2）或 docker stats |
-| 2 | API 与本仓库源码不一致 | host 接口报「请选择主机分组」，工作区源码中查无此文案 | 容器运行 gitee 拉取的 v4.0.1：host 接口用独立分组表（先 POST `/api/host/group/` 建组，再传 `group_ids`）；工作区 tip 已改为 `zone` 字符串。**以「容器内实际运行代码」为接口核对基准** |
-| 3 | Git Bash 下 curl 发中文 JSON 失败 | 平台报 `Invalid data type for parse` | Windows Git Bash 的中文按 GBK 编码发出，json.loads 解析 UTF-8 失败；lab 脚本所有 JSON body 一律用 ASCII |
-| 4 | 应用 key 校验 | `demo-app` 被拒 | v4.0.1 要求 key 仅字母/数字/下划线 → 用 `demo_app` |
-| 5 | 平台 JSON 响应带空格 | `"access_token": "..."`（冒号后有空格） | 脚本提取 token/id 时模式写 `[ ]*` 兼容；错误字段可能为 `null` 而非空串 |
-| 6 | Web 终端打开主机无反应 | 单击树节点无会话 | v4.0.1 交互为**双击**叶子节点开会话（`nativeEvent.detail > 1`） |
-| 7 | 发布申请创建响应无 id | POST 成功但 body 只有 `{"data":"","error":null}` | 从申请列表反查：列表按 `-id` 排序，首个元素即最新（`GET /api/deploy/request/`） |
-| 7 | 官方镜像 VOLUME /data 无法撤销 | 以官方镜像为底 COPY 二开代码，被 Docker 自动挂的匿名卷遮蔽，容器 restart 循环（supervisord 报 logs 不存在） | **全量自建镜像**（基于官方构建文件，不声明 VOLUME，代码内置镜像层），见 §9 与 lab/docker/Dockerfile 头注 |
-| 8 | docs/docker 全部文件 CRLF | 容器报 `exec /entrypoint.sh: no such file or directory`（shebang 带 \r）；core.autocrlf=true 且 .gitattributes 规则晚于文件恢复 | .gitattributes 补 `docs/docker/** text eol=lf`，rm + git checkout 重新落盘（blob 零变化） |
-| 9 | bullseye 基底 apt 装不了 | debian-security 包 404（bullseye 2026-08 结束 LTS，源残缺） | 基底切 python:3.9-slim-bookworm（仍在支持期）；USTC 源 bookworm 为 deb822 格式（sed 路径 /etc/apt/sources.list.d/debian.sources） |
-| 10 | ad-hoc 命令没有 recap | 状态判定报「退出码 0 无 recap」——recap 是 ansible-playbook 专属输出 | parse_output 双解析：recap 优先，回退逐主机结果行（`host \| SUCCESS/UNREACHABLE`）统计 |
+| #   | 坑                                | 现象                                                                                                                            | 处置                                                                                                                                                                                                                   |
+| --- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 容器内 `free -m` 不是节点内存     | 显示 WSL2 宿主的 5.9GB                                                                                                          | cgroup 限额不改变 free 视图；巡检报表中节点内存改读 `/sys/fs/cgroup/memory.current`（cgroup v2）或 docker stats                                                                                                        |
+| 2   | API 与本仓库源码不一致            | host 接口报「请选择主机分组」，工作区源码中查无此文案                                                                           | 容器运行 gitee 拉取的 v4.0.1：host 接口用独立分组表（先 POST `/api/host/group/` 建组，再传 `group_ids`）；工作区 tip 已改为 `zone` 字符串。**以「容器内实际运行代码」为接口核对基准**                                  |
+| 3   | Git Bash 下 curl 发中文 JSON 失败 | 平台报 `Invalid data type for parse`                                                                                            | Windows Git Bash 把命令行参数里的中文按 GBK 编码发出，`json.loads` 解析 UTF-8 失败。**JSON body 一律走 stdin 传**（`printf '%s' "$payload" \| curl … --data-binary @-`），不要用 `-d` 内联非 ASCII；内联参数仅限 ASCII |
+| 4   | 应用 key 校验                     | `demo-app` 被拒                                                                                                                 | v4.0.1 要求 key 仅字母/数字/下划线 → 用 `demo_app`                                                                                                                                                                     |
+| 5   | 平台 JSON 响应带空格              | `"access_token": "..."`（冒号后有空格）                                                                                         | 脚本提取 token/id 时模式写 `[ ]*` 兼容；错误字段可能为 `null` 而非空串                                                                                                                                                 |
+| 6   | Web 终端打开主机无反应            | 单击树节点无会话                                                                                                                | v4.0.1 交互为**双击**叶子节点开会话（`nativeEvent.detail > 1`）                                                                                                                                                        |
+| 7   | 发布申请创建响应无 id             | POST 成功但 body 只有 `{"data":"","error":null}`                                                                                | 从申请列表反查：列表按 `-id` 排序，首个元素即最新（`GET /api/deploy/request/`）                                                                                                                                        |
+| 7   | 官方镜像 VOLUME /data 无法撤销    | 以官方镜像为底 COPY 二开代码，被 Docker 自动挂的匿名卷遮蔽，容器 restart 循环（supervisord 报 logs 不存在）                     | **全量自建镜像**（基于官方构建文件，不声明 VOLUME，代码内置镜像层），见 §9 与 lab/docker/Dockerfile 头注                                                                                                               |
+| 8   | docs/docker 全部文件 CRLF         | 容器报 `exec /entrypoint.sh: no such file or directory`（shebang 带 \r）；core.autocrlf=true 且 .gitattributes 规则晚于文件恢复 | .gitattributes 补 `docs/docker/** text eol=lf`，rm + git checkout 重新落盘（blob 零变化）                                                                                                                              |
+| 9   | bullseye 基底 apt 装不了          | debian-security 包 404（bullseye 2026-08 结束 LTS，源残缺）                                                                     | 基底切 python:3.9-slim-bookworm（仍在支持期）；USTC 源 bookworm 为 deb822 格式（sed 路径 /etc/apt/sources.list.d/debian.sources）                                                                                      |
+| 10  | ad-hoc 命令没有 recap             | 状态判定报「退出码 0 无 recap」——recap 是 ansible-playbook 专属输出                                                             | parse_output 双解析：recap 优先，回退逐主机结果行（`host \| SUCCESS/UNREACHABLE`）统计                                                                                                                                 |
 
 ## 9. Ansible 执行引擎运行形态（2026-09-09；决策记录见 ADR-0004）
 
@@ -294,34 +317,63 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python -m pytest apps/ansible_
 ## 11. Playbook 管理与 git 版本化（2026-09-13）
 
 # 数据面：REPOS_DIR/ansible_ops/playbooks/ 即 git 仓库（单仓库多文件，挂 spug-repos 卷
+
 # 持久），文件 {id}.yml；模型 ansible_playbooks.content 与文件互为镜像，写路径统一走
+
 # repo.write_and_commit（内容归一化 LF 后同时落文件与 DB）。容器内手工检查：
-#   cd /data/repos/ansible_ops/playbooks && git log --pretty=format:'%h %an %s'
+
+# cd /data/repos/ansible_ops/playbooks && git log --pretty=format:'%h %an %s'
+
 # 提交作者 = 操作人昵称（审计），提交者固定 OpsForge <opsforge@local>；镜像内无全局
+
 # git 身份，GitPython 必须显式传 author/committer Actor。
+
 # 保存/编辑/回滚前先 ansible-playbook --syntax-check（60s 超时；PYTHONWARNINGS=ignore
+
 # 防止 paramiko 弃用警告混入返回给前端的报错文本）。
+
 # 版本历史 API 每条 commit 附 git show 的 patch 文本（前端渲染实现"diff 可见"）；
+
 # 回滚 = 取旧 commit 的 blob 内容重新提交为新 commit（历史线性，不丢后续记录）。
-#   GET  /api/ansible_ops/playbooks/                列表/创建（POST）
-#   GET/PUT/DELETE /api/ansible_ops/playbooks/{id}/ 详情/编辑/删除
-#   GET  /api/ansible_ops/playbooks/{id}/versions/  commit 列表（含 patch）
-#   POST /api/ansible_ops/playbooks/{id}/rollback/  body {commit}
+
+# GET /api/ansible_ops/playbooks/ 列表/创建（POST）
+
+# GET/PUT/DELETE /api/ansible_ops/playbooks/{id}/ 详情/编辑/删除
+
+# GET /api/ansible_ops/playbooks/{id}/versions/ commit 列表（含 patch）
+
+# POST /api/ansible_ops/playbooks/{id}/rollback/ body {commit}
+
 # exec 联动：POST /api/ansible_ops/exec/ 的 playbook_id 即 Playbook.id，执行命令
+
 # ansible-playbook -i <动态inventory> -f 10 /data/repos/ansible_ops/playbooks/{id}.yml；
+
 # 排队期间 Playbook 被删（FK SET_NULL）→ 任务落 failed，summary.reason 可读。
+
 # 前端：/ansible/playbooks 管理页（ACEditor yaml 编辑、版本抽屉含 diff/回滚）；
+
 # /ansible/exec 页执行类型切换，/ansible/exec?playbook=<id> 从管理页直达。
+
 # 踩坑：
+
 # - GitPython repo.git.show() 字符串输出会去末尾换行，字节级内容必须走对象 API
-#   （commit.tree / rel → data_stream.read()）。
+
+# （commit.tree / rel → data_stream.read()）。
+
 # - Python 3.9 Path.write_text 无 newline 参数（3.10 才有），且其语义是"不翻译"
-#   而非归一化，CRLF 要手动 replace；spug JsonParser 会 strip 首尾，API 入库内容无尾换行。
+
+# 而非归一化，CRLF 要手动 replace；spug JsonParser 会 strip 首尾，API 入库内容无尾换行。
+
 # - git 仓库根就是 playbooks/ 目录本身：git add 用绝对路径，show sha:path 用仓库相对路径。
+
 # - 迁移文件被上游 .gitignore(migrations/) 忽略：提交用 git add -f（T1 先例）。
+
 # 实测记录（2026-09-14 凌晨）：smoke-ping 三版两改 → 4 commits
+
 # （作者"管理员"）→ diff 渲染正确 → 回滚 76a810b 内容字节级回退；坏 YAML 拒保存
+
 # 且 toast 展示 ansible ERROR 原文；管理页「执行」直达 exec 页联动 Job#24 真实
+
 # ping web-01 成功（recap ok=2 failed=0，WS 实时回传正常）。pytest 77/77 容器内全绿。
 
 ## 12. Playbook 库与幂等验证（2026-09-16）
@@ -343,12 +395,12 @@ lab/playbooks/（仓库源，git 入库）
 
 ### 四个 Playbook 与实测数据
 
-| Playbook | 目标节点 | 首跑（job） | 幂等二跑（job） | 关键结果 |
-| --- | --- | --- | --- | --- |
-| baseline | 全 7 台 | 54（45 changed） | 55（0） | 时区 CST、PermitRootLogin no、chrony masked、sysctl 3 参数生效 |
-| nginx | web-01/02 | 40（10） | 41（0） | handler「优雅重载」触发留证；X-Node/节点名渲染 |
-| mysql-master-slave | db-01/02 | 46（33s） | 47（0） | 双 Yes、server-id 101/102、主建表从可查；内存 123MiB |
-| redis-sentinel | cache-01/02/03 | 50（20s） | 51（0） | failover：检出→切换 1.1s（sentinel 日志链）；旧主自动转 replica |
+| Playbook           | 目标节点       | 首跑（job）      | 幂等二跑（job） | 关键结果                                                        |
+| ------------------ | -------------- | ---------------- | --------------- | --------------------------------------------------------------- |
+| baseline           | 全 7 台        | 54（45 changed） | 55（0）         | 时区 CST、PermitRootLogin no、chrony masked、sysctl 3 参数生效  |
+| nginx              | web-01/02      | 40（10）         | 41（0）         | handler「优雅重载」触发留证；X-Node/节点名渲染                  |
+| mysql-master-slave | db-01/02       | 46（33s）        | 47（0）         | 双 Yes、server-id 101/102、主建表从可查；内存 123MiB            |
+| redis-sentinel     | cache-01/02/03 | 50（20s）        | 51（0）         | failover：检出→切换 1.1s（sentinel 日志链）；旧主自动转 replica |
 
 手工 vs Playbook 对比（验收 1 数据）：手工逐台搭主从净耗时 ~60s 且踩 3 坑
 （无 /var/log/mysql、-N 参数误判复制状态、policy-rc.d 不自启），含重试 ≈100s；
@@ -357,8 +409,9 @@ Playbook 一键 33s 一次通过且可无限重复——**价值不在快，在�
 ### 节点重置与重新纳管（节点重建后必读）
 
 节点 force-recreate 后 host key 与 authorized_keys 重置：平台 known_hosts 旧指纹冲突
-+ 公钥丢失 → 任务 unreachable。恢复：`ssh-keygen -f /root/.ssh/known_hosts -R <节点>`
-+ 平台「编辑主机」带 password 提交（接口 `_do_host_verify` 重发公钥）。
+
+- 公钥丢失 → 任务 unreachable。恢复：`ssh-keygen -f /root/.ssh/known_hosts -R <节点>`
+- 平台「编辑主机」带 password 提交（接口 `_do_host_verify` 重发公钥）。
 
 ### failover 恢复姿势
 
@@ -398,7 +451,7 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
   采集脚本（base64 拼单行 JSON），7 节点单轮 ~1s；并发名额与手动执行共享
   MAX_JOBS=2（采集阶段排队最多 120s）。
 - **检查协议**：`CHECKS = {name: fn}`，`check(runner, host) -> CheckResult(ok|warn|
-  crit)`，新增检查只需在 `inspection/checks.py` 注册；阈值常量在同文件头部。
+crit)`，新增检查只需在 `inspection/checks.py` 注册；阈值常量在同文件头部。
 - **产物**：`storage/reports/inspection-{report_id}-{ts}.{html|xlsx|manifest.json}`；
   diff 基线 = 最近一条成功轮 manifest。阈值口径：内存/磁盘 >85 warn >95 crit；
   PSI avg60 >20 warn >50 crit；证书剩余 <30d warn <7d crit；端口检查仅对装了
@@ -406,12 +459,12 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
 
 ### 13.2 实测数据（2026-09-19）
 
-| 轮次 | 触发 | 结果 | 耗时 | 说明 |
-|---|---|---|---|---|
-| report 8 | manual | 42 ok | ~1s | 健康基线轮 |
-| report 9 | manual | 37 ok / **5 crit** | ~1s | 3 类故障 3/3 检出 |
-| report 10 | manual | 42 ok | ~1s | 恢复轮，diff 记录 crit→ok ×5 |
-| report 11 | scheduled | 42 ok | ~2s | 定时器自动轮（300s 周期） |
+| 轮次      | 触发      | 结果               | 耗时 | 说明                         |
+| --------- | --------- | ------------------ | ---- | ---------------------------- |
+| report 8  | manual    | 42 ok              | ~1s  | 健康基线轮                   |
+| report 9  | manual    | 37 ok / **5 crit** | ~1s  | 3 类故障 3/3 检出            |
+| report 10 | manual    | 42 ok              | ~1s  | 恢复轮，diff 记录 crit→ok ×5 |
+| report 11 | scheduled | 42 ok              | ~2s  | 定时器自动轮（300s 周期）    |
 
 - 故障注入：db-01 tmpfs 写满（disk）/ web-01 停 nginx（process+port）/ web-02
   python3 占 80（port 被占用 + process）。明细与注入命令见
@@ -484,12 +537,13 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
 - **mock 读取与运行**：容器内 `docker exec -d spug python3 /tmp/mock_webhook.py`，
   消息落 `/tmp/heal-mock/`；webhook URL 从 `heal_webhook.env` 读（env 优先，
   文件兜底——supervisor 常驻进程吃不到运行期注入的 env，文件是实验场景的
-  覆盖通道）。
+  覆盖通道）。**浏览器直接看消息**：override 已把容器 9999 映射到宿主 8002，
+  打开 <http://127.0.0.1:8002/> 即 mock 接收页（`setup_heal_demo.sh` 会自动拉起该服务）。
 
 ## 15. 网络探测与设备备份（2026-09-23）
 
 发挥网络工程背景的模块：批量端口/链路探测矩阵 + netmiko 设备配置备份与变更审计。
-详细实验数据见 `docs/opsforge/experiments/2026-10-02-full-replay.md`。
+详细实验数据见 `experiments/2026-10-02-full-replay.md`。
 
 ### 15.1 运行形态
 
@@ -501,8 +555,8 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
   "网络断链"不匹配自愈规则关键字，自然旁路。手动与定时轮共用状态机。
 - **设备备份**：netmiko==4.6.0 `linux` 驱动 SSH + vtysh 采 `show running-config`；
   落 `storage/netbackup/{device}/{ts}.cfg`（storage 持久卷），内容变化才写新文件
-  + 落 `net_config_changes`（diff 相邻不同版本）。口令：env `OPS_PASSWORD` 优先，
-  `storage/net_devices.env` 兜底（KEY=VALUE，不入库不入镜像）。
+    - 落 `net_config_changes`（diff 相邻不同版本）。口令：env `OPS_PASSWORD` 优先，
+      `storage/net_devices.env` 兜底（KEY=VALUE，不入库不入镜像）。
 - **调度**：supervisor program `opsforge-net` = `run_net --loop`，探测 30s /
   备份 120s（env `OPSFORGE_NET_PROBE_INTERVAL` / `OPSFORGE_NET_BACKUP_INTERVAL`）。
 - **API**：`POST /api/ansible_ops/net-probe/run/`（手动探测，同步返回矩阵）、
@@ -525,14 +579,14 @@ ssh -p 2231 ops@localhost                                    # 人工调试口�
 
 ### 15.3 实测数据（2026-09-23）
 
-| 项 | 值 |
-|---|---|
-| 断链检出延迟（stop 节点 → Alarm'1'） | **69 s**（阈值 3 × 30s 探测间隔） |
-| 恢复检出延迟（start 节点 → Alarm'2'） | **5 s** |
-| 断链持续时长自动核算 | duration=179秒（与停机窗口吻合） |
-| FRR 配置变更检出延迟 | **22 s**（vtysh 注入路由 → 下轮 120s 备份轮） |
-| 矩阵规模 | 9 目标 20 检查项，单轮 <1s，ICMP RTT 0.0-0.5ms（容器网桥） |
-| 平台增量依赖 | netmiko==4.6.0（依赖树 pip-audit 零已知漏洞） |
+| 项                                    | 值                                                         |
+| ------------------------------------- | ---------------------------------------------------------- |
+| 断链检出延迟（stop 节点 → Alarm'1'）  | **69 s**（阈值 3 × 30s 探测间隔）                          |
+| 恢复检出延迟（start 节点 → Alarm'2'） | **5 s**                                                    |
+| 断链持续时长自动核算                  | duration=179秒（与停机窗口吻合）                           |
+| FRR 配置变更检出延迟                  | **22 s**（vtysh 注入路由 → 下轮 120s 备份轮）              |
+| 矩阵规模                              | 9 目标 20 检查项，单轮 <1s，ICMP RTT 0.0-0.5ms（容器网桥） |
+| 平台增量依赖                          | netmiko==4.6.0（依赖树 pip-audit 零已知漏洞）              |
 
 ### 15.4 踩坑与建议
 
@@ -552,3 +606,28 @@ ssh -p 2231 ops@localhost                                    # 人工调试口�
   入口，保住信号转发。
 - **net_devices.env 放 storage 卷**：容器重建不丢（heal_webhook.env 在镜像层，
   重建即丢，本次任务口令文件刻意放持久卷内）。
+
+## 16. 收尾：产物索引与最终回归（2026-09-25）
+
+10 张任务全部完成后，文档与证据链的落点：
+
+| 产物           | 位置                                     | 说明                                                           |
+| -------------- | ---------------------------------------- | -------------------------------------------------------------- |
+| README（重写） | 仓库根 `README.md`                       | mermaid 架构图 + 快速开始 + 实测数据表（逐格溯源 experiments） |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
+| 实验汇总       | `docs/opsforge/experiments/summary.json` | 全部量化指标的结构化汇总，每格带 source 指向原始记录           |
+| 二开统计       | `scripts/oss-diff.py`                    | `python scripts/oss-diff.py`（按目录聚合，口径见 README）      |
+| 验收套件       | `tests/acceptance/`                      | Playwright 31 用例（真实浏览器验收）                           |
+
+最终回归（2026-10-02，实测）：容器内 `pytest` **142 passed**；
+README 快速开始 6 步在现有环境逐条复跑验证（其中步骤 3 带 `--build` 会触发节点
+容器重建，README 已注明；验证过程与恢复记录见
+`experiments/2026-10-02-full-replay.md`）。完整首启（干净环境）过程
+以 §2–§4 的实测记录为准。
