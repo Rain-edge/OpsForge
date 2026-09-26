@@ -7,6 +7,7 @@
     "test": "playwright test",
     "test:infra": "playwright test infra/",
     "test:ans": "playwright test ans/",
+    "test:e2e": "playwright test e2e/",
     "report": "playwright show-report"
   },
   "devDependencies": {

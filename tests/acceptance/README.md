@@ -60,6 +60,19 @@ npm run report
 | `ans/ac07-playbook-exec.spec.js` | smoke-ping 管理页直达执行 ok=4 | T3 验收 3 |
 | `ans/ac08-pytest-regression.spec.js` | 容器内 pytest 全量 ≥77 通过 | T1 验收 1 |
 
+### 用例清单（终验 e2e，对照 总验收标准 1-5）
+
+| 文件 | 用例 | 对应总标准 |
+|---|---|---|
+| `e2e/e01-playbook-idempotent.spec.js` | 四册 Playbook 重跑全 success，baseline 二连跑第二次 changed=0 | 标准 1（幂等） |
+| `e2e/e02-inspection-faults.spec.js` | 3 类故障注入 → 巡检 5 crit → HTML 报告 → 恢复 42 ok | 标准 2 |
+| `e2e/e03-self-healing.spec.js` | 停 nginx → 告警 → 自动自愈恢复（180s 窗口内，实测 36s） | 标准 3 |
+| `e2e/e04-net-probe-backup.spec.js` | 断链矩阵红+告警+回绿、备份 diff 检出 | 网络模块 |
+| `e2e/e05-doc-deliverables.spec.js` | 文档产物链完整 | 标准 4/5 |
+
+**注意**：e02/e03/e04 会向实验环境注入真实故障（停服务/填磁盘/停节点），用例自带恢复与
+afterAll 兜底；跑完环境自动回健康基线。
+
 ## 怎么加新用例（下一个模块照做）
 
 1. 新建 `tests/acceptance/<模块>/acNN-xxx.spec.js`，文件头注释块写清：验证什么、对应哪条验收标准、前置条件
@@ -84,5 +97,10 @@ npm run report
 - **antd modal 关闭后 DOM 仍留在页面上**：Close 按钮定位会命中隐藏元素报 not visible，
   关弹窗优先用 Escape；行内展开（expanded-row）会插队 tr 序列，行定位用 `tr.ant-table-row` 过滤
 - Web 终端开会话靠**双击**主机树叶子（单击无反应）；xterm 文本用 `evaluate` 直查 `.xterm-rows`，别用常规 locator
+- **涉及环境的用例（e2e）开头先 `ensureLabHealthy()`**（helpers/lab-env.js）：前序用例的注入残留会让幂等/全绿断言失真（实测教训：nginx 残留 stopped 导致重跑 changed=1——那是 ansible 在正确修正漂移）
+- **`pkill -f http.server` 自杀陷阱**：模式会匹配承载它的 `sh -c` 自身并杀掉，后续命令全部不执行——用 `pkill -f '[h]ttp.server'` 绕开
+- **报警历史/探测矩阵/巡检报表页是静态 DOM**：数据晚于页面加载入库时页面不会自己更新，poll 等待必须带 `page.reload()`
+- **容器重启后 sysctl 运行时值回默认**：幂等断言用「二连跑第二次 changed=0」口径（第一跑可能是漂移修正，changed>0 属正常）
+- **自愈 cooldown（60s）内重复告警被正确抑制**：全量串行跑时自愈用例可能撞上冷却，窗口要放宽（实测 180s 窗口内必恢复）
 - ac05 开头的 5 秒缓冲：前一条批量执行刚建立 7 条 SSH 通道，节点 sshd 在旧连接回收前会丢弃新连接（MaxStartups 行为）；`retries: 1` 是兜底
 - 凭据在 `config.js`（与 RUNBOOK 一致的本地实验默认值，勿用于公网）
