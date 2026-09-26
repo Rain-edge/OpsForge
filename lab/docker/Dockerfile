@@ -123,7 +123,14 @@ COPY lab/docker/spug_routing.py /data/spug/spug_api/consumer/routing.py
 COPY lab/docker/spug_overrides.py /data/spug/spug_api/spug/overrides.py
 
 RUN mkdir -p /data/repos /var/log/supervisor /run/nginx \
-    /data/spug/spug_api/storage/ansible_logs
+    /data/spug/spug_api/storage/ansible_logs \
+    /data/spug/spug_api/storage/reports
+
+# OpsForge 定时巡检调度：向 supervisor 追加常驻 program（内部
+# apscheduler 按 OPSFORGE_INSPECTION_INTERVAL 秒触发，默认 300）。上游
+# docs/docker/spug.ini 原件不动，增量只在此追加段；选 supervisor 而非 crontab
+# 的理由（crontab 不继承容器 env 的 MySQL 口令等）见踩坑记录
+RUN printf '\n[program:opsforge-inspection]\ncommand = python manage.py run_inspection --loop\ndirectory = /data/spug/spug_api\nautostart = true\nstartsecs = 3\nstdout_logfile = /data/spug/spug_api/logs/inspection.log\nredirect_stderr = true\n' >> /etc/supervisord.conf
 
 EXPOSE 80
 ENTRYPOINT ["/entrypoint.sh"]

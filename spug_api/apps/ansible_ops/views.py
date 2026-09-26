@@ -2,14 +2,18 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 # OpsForge：Ansible 执行引擎 API；实时回传增加任务终止；
-# Playbook 管理 增加 Playbook 管理与版本化 API，并放开 exec 的 playbook 执行
+# Playbook 管理 增加 Playbook 管理与版本化 API，并放开 exec 的 playbook 执行；
+# 巡检报表增加巡检报告 API（列表 / 手动触发 / 详情 / 产物下载）
 from django.views.generic import View
 from django.core.paginator import Paginator
+from django.http import FileResponse
 from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, auth, human_datetime
-from apps.ansible_ops.models import AnsibleJob, Playbook
+from apps.ansible_ops.models import AnsibleJob, Playbook, InspectionReport
 from apps.ansible_ops.executor import (
     submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY, PID_KEY, KILL_KEY)
+from apps.ansible_ops.inspection.service import submit_round
+from apps.ansible_ops.inspection.report import REPORTS_DIR
 from apps.ansible_ops.repo import (
     normalize_content, syntax_check, write_and_commit, delete_and_commit,
     get_content_at, list_versions, playbook_file)
@@ -287,3 +291,80 @@ class PlaybookRollbackView(View):
             pb.save()
             return json_response()
         return json_response(error=error)
+
+
+# ---- 批量巡检报告 ----
+# 权限沿用本 app 两个字符串（view=读，exec=写），同 Playbook 段注释口径
+
+# 产物 kind → 模型字段 / 响应类型
+REPORT_FILES = {
+    'html': ('html_path', 'text/html'),
+    'xlsx': ('xlsx_path', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    'manifest': ('manifest_path', 'application/json'),
+}
+
+
+class InspectionListView(View):
+    @auth('ansible_ops.view')
+    def get(self, request):
+        queryset = InspectionReport.objects.all()
+        try:
+            page_size = max(int(request.GET.get('page_size', 20)), 1)
+            page_no = max(int(request.GET.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            page_size, page_no = 20, 1
+        page = Paginator(queryset, page_size)
+        records = page.get_page(page_no)
+        return json_response({
+            'total': page.count,
+            'reports': [x.to_view() for x in records.object_list],
+        })
+
+
+class InspectionRunView(View):
+    """手动触发一轮巡检（约定路由 POST /api/ansible_ops/inspection/run/）。
+
+    异步执行：立即建 running 记录返回 id，前端轮询列表刷新状态；
+    采集所需并发名额在轮次内部等待获取，这里只做快速预检避免白等。
+    """
+    @auth('ansible_ops.exec')
+    def post(self, request):
+        rds = get_redis_connection()
+        running = rds.get(RUNNING_KEY)
+        if running and int(running) >= MAX_JOBS:
+            return json_response(error=f'执行并发已满（上限 {MAX_JOBS}），请稍后再试')
+        report_id = submit_round(InspectionReport.TRIGGER_MANUAL, user=request.user)
+        return json_response({'report_id': report_id})
+
+
+class InspectionDetailView(View):
+    @auth('ansible_ops.view')
+    def get(self, request, pk):
+        report = InspectionReport.objects.filter(pk=pk).first()
+        if not report:
+            return json_response(error='巡检报告不存在')
+        return json_response(report.to_view())
+
+
+class InspectionFileView(View):
+    """报告产物下载/预览。路径取自数据库记录而非 URL 拼接（防穿越）；
+    预览（iframe 内嵌 HTML 报告）与下载（Content-Disposition）共用本视图。"""
+    @auth('ansible_ops.view')
+    def get(self, request, pk, kind):
+        report = InspectionReport.objects.filter(pk=pk).first()
+        if not report:
+            return json_response(error='巡检报告不存在')
+        if kind not in REPORT_FILES:
+            return json_response(error='未知的产物类型')
+        field, content_type = REPORT_FILES[kind]
+        path = getattr(report, field)
+        if not path or not os.path.exists(path):
+            return json_response(error='产物文件不存在（轮次可能尚未完成或已失败）')
+        # 纵深防御：路径本应只来自轮次落库值，真实路径越出报告目录时拒绝
+        if not os.path.realpath(path).startswith(str(REPORTS_DIR) + os.sep):
+            return json_response(error='产物路径异常，已拒绝访问')
+        filename = os.path.basename(path)
+        response = FileResponse(open(path, 'rb'), content_type=content_type)
+        if request.GET.get('dl'):
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
