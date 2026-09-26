@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>OpsForge · {{ inventory_hostname }}</title>
+  <style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;text-align:center;padding-top:15vh}h1{font-size:3rem}</style>
+</head>
+<body>
+  <h1>{{ inventory_hostname | e }}</h1>
+  <p>OpsForge Playbook 库 · deployed via Ansible playbook</p>
+</body>
+</html>

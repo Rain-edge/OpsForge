@@ -1,0 +1,23 @@
+# Playbook 库全节点变量（变量集中管理，接口约定：group_vars/host_vars 集中，playbook 不硬编码）
+# 敏感口令的覆盖方式：执行时经平台 extra_vars 注入即可覆盖此处默认值（实验弱口令）。
+
+timezone: Asia/Shanghai
+
+common_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - tcpdump
+  - rsync
+  - less
+  - lsof
+  - unzip
+  - bash-completion
+
+# 内核参数（privileged 容器与 WSL2 宿主共享内核，只选低危、不劣于默认值的参数；
+# 逐项影响评估见 RUNBOOK「Playbook 库」章节）
+kernel_params:
+  vm.swappiness: "10"
+  vm.overcommit_memory: "1"
+  net.ipv4.tcp_max_syn_backlog: "1024"

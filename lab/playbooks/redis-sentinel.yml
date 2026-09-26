@@ -1,0 +1,120 @@
+---
+# redis-sentinel.yml — cache 组 Redis 哨兵拓扑一键部署
+#
+# 拓扑声明（host_vars/redis_role）：cache-01 master / cache-02 replica / cache-03 sentinel
+# 单 sentinel + quorum=1 即可自动故障转移（≥3 sentinel 才有 sentinel 自身高可用，
+# 实验环境如实记录；节点规划 cache×3 正是为哨兵演练留的拓扑位）。
+#
+# 幂等要点（卡验收 3）与已知局限（如实记录）：
+# - redis.conf 模板幂等（redis-server 不改写自身配置）
+# - sentinel.conf 用 force=no 仅首部署写入：sentinel 运行后会改写该文件加入
+#   myid / known-* 自管状态，强覆盖会破坏 sentinel 状态并破坏幂等
+# - failover 演示后重跑本 playbook 会把拓扑重置回声明的初始状态（声明式语义，
+#   因 sentinel 不改写客户端实例配置文件，重启后的旧主会按 conf 回到 master）
+- hosts: cache
+  become: true
+  gather_facts: false
+  pre_tasks:
+    # 口令禁 $（command 模块无 shell 展开，但防未来改 shell 写法）且禁前导 -（redis-cli argv）
+    - name: 校验变量（注入防御）与角色声明完整性
+      ansible.builtin.assert:
+        that:
+          - redis_password is match('^[A-Za-z0-9][A-Za-z0-9!@#%^&*_.~-]*$')
+          - redis_role is defined and redis_role in ['master', 'replica', 'sentinel']
+          - redis_master_host is match('^[A-Za-z0-9_-]+$')
+          - redis_master_name is match('^[A-Za-z0-9_-]+$')
+        fail_msg: redis_password 非法（禁 $ 与前导 -）或节点缺 host_vars/redis_role 声明
+  tasks:
+
+    - name: 安装 Redis（含 redis-sentinel）
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # ---------- 实例节点（master / replica）----------
+    - name: 下发 Redis 实例配置
+      ansible.builtin.template:
+        src: redis.conf.j2
+        dest: /etc/redis/redis.conf
+        owner: redis
+        group: redis
+        mode: "0640"
+      when: redis_role != 'sentinel'
+      notify: 重启 Redis
+
+    - name: 启动 Redis 实例
+      ansible.builtin.systemd:
+        name: redis-server
+        state: started
+        enabled: true
+      when: redis_role != 'sentinel'
+
+    # ---------- Sentinel 节点 ----------
+    - name: 下发 Sentinel 配置（仅首部署写入，后续由 sentinel 自管）
+      ansible.builtin.template:
+        src: sentinel.conf.j2
+        dest: /etc/redis/sentinel.conf
+        owner: redis
+        group: redis
+        mode: "0640"
+        force: false
+      when: redis_role == 'sentinel'
+
+    - name: 下发 Sentinel systemd 单元（Debian 12 redis 包不含，需自建）
+      ansible.builtin.template:
+        src: redis-sentinel.service.j2
+        dest: /etc/systemd/system/redis-sentinel.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: sentinel_unit
+      when: redis_role == 'sentinel'
+
+    - name: 重载 systemd（新单元生效）
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: redis_role == 'sentinel' and sentinel_unit is changed
+
+    - name: Sentinel 节点停用实例并启用 Sentinel
+      ansible.builtin.systemd:
+        name: "{{ item.name }}"
+        state: "{{ item.state }}"
+        enabled: "{{ item.enabled }}"
+      loop:
+        - { name: redis-server, state: stopped, enabled: false }
+        - { name: redis-sentinel, state: started, enabled: true }
+      when: redis_role == 'sentinel'
+
+    # ---------- 健康自检（不改状态，幂等核对）----------
+    - name: 实例 PING 自检
+      ansible.builtin.command: "redis-cli --no-auth-warning -a {{ redis_password }} ping"
+      register: ping_out
+      changed_when: false
+      failed_when: "'PONG' not in ping_out.stdout"
+      when: redis_role != 'sentinel'
+
+    - name: replica 复制状态自检（master_link_status:up）
+      ansible.builtin.command: "redis-cli --no-auth-warning -a {{ redis_password }} info replication"
+      register: repl_info
+      changed_when: false
+      until: "'master_link_status:up' in repl_info.stdout"
+      retries: 10
+      delay: 3
+      when: redis_role == 'replica'
+
+    - name: Sentinel 视角主库自检
+      ansible.builtin.command: "redis-cli -p 26379 sentinel get-master-addr-by-name {{ redis_master_name }}"
+      register: sent_master
+      changed_when: false
+      until: sent_master.stdout | trim | length > 0
+      retries: 10
+      delay: 3
+      when: redis_role == 'sentinel'
+
+  handlers:
+    - name: 重启 Redis
+      ansible.builtin.systemd:
+        name: redis-server
+        state: restarted

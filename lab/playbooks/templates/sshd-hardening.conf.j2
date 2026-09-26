@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Playbook 库基线加固：SSH 收敛（保留 ops 密码登录供人工验收路径，只禁 root）
+PermitRootLogin no
+MaxAuthTries 4
+LoginGraceTime 30
+MaxSessions 8
+ClientAliveInterval 600
+ClientAliveCountMax 3

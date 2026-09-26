@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+# Redis 实例配置（角色: {{ redis_role }}）
+# maxmemory 上限保护 256MB cgroup；实验环境不做持久化（拓扑由 playbook 声明管理）
+bind 0.0.0.0
+protected-mode yes
+port 6379
+dir /var/lib/redis
+logfile /var/log/redis/redis-server.log
+daemonize no
+supervised auto
+requirepass {{ redis_password }}
+masterauth {{ redis_password }}
+maxmemory 128mb
+maxmemory-policy allkeys-lru
+save ""
+appendonly no
+{% if redis_role == 'replica' %}
+replicaof {{ redis_master_host }} 6379
+{% endif %}

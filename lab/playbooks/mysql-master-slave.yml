@@ -1,0 +1,145 @@
+---
+# mysql-master-slave.yml — db 组 MariaDB 10.11 主从复制一键部署
+#
+# 选型说明：节点 mem_limit 256m 跑不动 MySQL 8（空载 ~400MB），用 Debian 12
+# 自带 MariaDB 10.11（协议兼容，SHOW SLAVE STATUS 可用），如实记录于文档。
+#
+# 幂等要点（卡验收 3）：
+# - 低内存配置先于 apt 落盘，安装器启动即用低配，避免 256MB cgroup 内 OOM
+# - 复制账号先查后建，缺失才 CREATE+GRANT
+# - 从库先查 SHOW SLAVE STATUS，仅"未配置/线程中断"时才 STOP+CHANGE+START
+# - 终态双线程校验（Slave_IO_Running / Slave_SQL_Running 双 Yes）不改状态
+# - master binlog 位点在建账号之后获取，保证从库从有效位点起复制
+- hosts: db
+  become: true
+  gather_facts: false
+  pre_tasks:
+    # 注入防御：user/host 与口令一样可被 extra_vars 覆盖，全部走 shell 双引号上下文，
+    # 白名单统一收敛（口令禁 $：防 shell 双引号内 $VAR 展开出意外口令）
+    - name: 校验变量字符集（SQL/shell 注入防御）与主库可达性
+      ansible.builtin.assert:
+        that:
+          - mysql_repl_password is match('^[A-Za-z0-9!@#%^&*_.~-]+$')
+          - mysql_repl_user is match('^[A-Za-z0-9_-]+$')
+          - mysql_master_host is match('^[A-Za-z0-9_-]+$')
+          - inventory_hostname is match('^db-[0-9]+$')
+          - mysql_master_host in ansible_play_hosts_all
+        fail_msg: >-
+          变量含非法字符（口令禁 $；user/host 仅字母数字_-），或节点不满足
+          db-0N 命名（server-id 推导依赖），或声明的主库不在本次执行主机集合
+  tasks:
+
+    - name: 确保配置目录存在（裸节点无 /etc/mysql，由 mariadb-common 包创建，预置则需先建）
+      ansible.builtin.file:
+        path: /etc/mysql/mariadb.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: 预置低内存与 server-id 配置（先于安装，启动即用低配）
+      ansible.builtin.template:
+        src: mariadb-tuning.cnf.j2
+        dest: /etc/mysql/mariadb.conf.d/60-opsforge.cnf
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: 安装 MariaDB 服务端与客户端
+      ansible.builtin.apt:
+        name:
+          - mariadb-server
+          - mariadb-client
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: 建 MariaDB 日志目录（slim 镜像缺失；mysql 用户由包创建，须在安装后）
+      ansible.builtin.file:
+        path: /var/log/mysql
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: "0750"
+
+    - name: 启动并开机自启
+      ansible.builtin.systemd:
+        name: mariadb
+        state: started
+        enabled: true
+
+    # ---------- 主库（mysql_master_host）----------
+    - name: 查询复制账号是否已授权
+      ansible.builtin.shell: >
+        mysql -NBe "SELECT user FROM mysql.user
+        WHERE user='{{ mysql_repl_user }}' AND Repl_slave_priv='Y'"
+      register: repl_user
+      changed_when: false
+      when: inventory_hostname == mysql_master_host
+
+    - name: 主库创建复制账号并授权（仅缺失时执行，保证幂等）
+      ansible.builtin.shell: |
+        mysql -e "CREATE USER IF NOT EXISTS '{{ mysql_repl_user }}'@'%' \
+        IDENTIFIED BY '{{ mysql_repl_password }}'; \
+        GRANT REPLICATION SLAVE ON *.* TO '{{ mysql_repl_user }}'@'%';"
+      when: inventory_hostname == mysql_master_host and (repl_user.stdout | trim) == ''
+
+    - name: 主库获取当前 binlog 位点（建账号之后）
+      ansible.builtin.shell: mysql -NBe "SHOW MASTER STATUS"
+      register: master_status
+      changed_when: false
+      when: inventory_hostname == mysql_master_host
+
+    # ---------- 从库（db 组其余节点）----------
+    - name: 查询从库复制状态（线程 + 主库指向）
+      # 注意不能加 -N（去列名）：与 \G vertical 输出组合后字段名消失，grep 字段必空（实测坑）；
+      # grep 匹配带尾随 ": " 防误匹配 Slave_SQL_Running_State（实测坑）
+      ansible.builtin.shell: >
+        mysql -e "SHOW SLAVE STATUS\G"
+        | grep -E 'Master_Host: |Slave_(IO|SQL)_Running: '
+        | awk -F': ' '{print $2}' | paste -sd'|' -
+      register: slave_status
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname != mysql_master_host
+
+    - name: 从库初始化复制（仅未配置或主库指向不符时，带当前位点）
+      ansible.builtin.shell: |
+        mysql -e "STOP SLAVE" || true
+        mysql -e "CHANGE MASTER TO \
+        MASTER_HOST='{{ mysql_master_host }}', \
+        MASTER_USER='{{ mysql_repl_user }}', \
+        MASTER_PASSWORD='{{ mysql_repl_password }}', \
+        MASTER_LOG_FILE='{{ hostvars[mysql_master_host].master_status.stdout.split()[0] }}', \
+        MASTER_LOG_POS={{ hostvars[mysql_master_host].master_status.stdout.split()[1] }}; \
+        START SLAVE;"
+      when: >-
+        inventory_hostname != mysql_master_host and
+        ((slave_status.stdout | trim) == '' or
+         (slave_status.stdout.split('|')[0] | trim) != mysql_master_host)
+
+    - name: 从库恢复复制线程（主库指向正确但线程中断：续传原位点，防丢事件）
+      ansible.builtin.shell: mysql -e "START SLAVE"
+      when: >-
+        inventory_hostname != mysql_master_host and
+        (slave_status.stdout | trim) != '' and
+        (slave_status.stdout.split('|')[0] | trim) == mysql_master_host and
+        (slave_status.stdout.split('|')[1:] | join('|')) != 'Yes|Yes'
+
+    # ---------- 终态校验 ----------
+    - name: 从库复制双线程校验（验收口径：双 Yes）
+      ansible.builtin.shell: >
+        mysql -e "SHOW SLAVE STATUS\G"
+        | grep -E 'Slave_(IO|SQL)_Running: ' | awk -F': ' '{print $2}' | paste -sd, -
+      register: slave_check
+      changed_when: false
+      until: (slave_check.stdout | trim) == 'Yes,Yes'
+      retries: 5
+      delay: 2
+      when: inventory_hostname != mysql_master_host
+
+    - name: 主库 binlog 写入自检
+      ansible.builtin.shell: mysql -NBe "SHOW BINARY LOGS" | head -1
+      register: master_binlog
+      changed_when: false
+      when: inventory_hostname == mysql_master_host

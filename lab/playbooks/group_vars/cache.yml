@@ -1,0 +1,8 @@
+# Playbook 库 cache 组变量：Redis 哨兵拓扑
+# 实验弱口令默认值（2026-09-16 约定）；执行时可用 extra_vars 覆盖
+redis_password: Redis_2026Lab
+redis_master_name: mymaster
+# 声明拓扑：master 固定 cache-01（容器名，docker DNS 可解析；sentinel 开 resolve-hostnames）
+redis_master_host: cache-01
+sentinel_quorum: 1
+sentinel_down_after_ms: 5000

@@ -1,0 +1,10 @@
+# Playbook 库 db 组变量：MariaDB 主从复制
+mysql_master_host: db-01
+mysql_repl_user: repl
+# 实验弱口令默认值（2026-09-16 约定）；执行时可用 extra_vars 覆盖。
+# 注意：复制账号仅在首次部署时创建，extra_vars 新口令对既有账号不生效（CREATE USER
+# IF NOT EXISTS 不改密）——轮换需在主库手动 ALTER USER 或删账号后重跑，文档已注明
+mysql_repl_password: Repl_2026Lab
+# 节点 mem_limit 256m：安装器与常驻都以低内存配置启动（模板先于 apt 落盘）
+mariadb_innodb_buffer_pool: 64M
+mariadb_max_connections: 30

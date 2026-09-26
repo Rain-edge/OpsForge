@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# web 节点站点配置（覆盖 Debian 默认站点）
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{ inventory_hostname }};
+    root /var/www/html;
+    index index.html;
+    add_header X-Node {{ inventory_hostname }} always;
+}

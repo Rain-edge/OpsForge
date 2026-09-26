@@ -1,0 +1,105 @@
+---
+# baseline.yml — 全节点基线加固（面向节点实验环境的 7 台 labnode）
+#
+# tags 分节（接口约定）：hardening（SSH 加固 + 工具包）/ time（时区 + chrony）/ kernel（内核参数）
+#
+# 运行环境要点：
+# - 节点是 privileged systemd 容器，与 WSL2 宿主共享内核：
+#   * sysctl 任务真实生效于宿主内核，参数只选低危值（评估见 RUNBOOK）
+#   * chronyd 若运行会调宿主内核时钟，故只装包并 mask 服务
+# - 纳管用户 ops 免密 sudo，become 直接可用
+# - 不动 PasswordAuthentication（保留人工验收 ssh -p 222x 路径），只禁 root 登录
+- hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # ---------- hardening ----------
+    - name: 安装常用工具包
+      ansible.builtin.apt:
+        name: "{{ common_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [hardening]
+
+    - name: 下发 SSH 加固配置（sshd drop-in）
+      ansible.builtin.template:
+        src: sshd-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/99-opsforge.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: 重启 sshd
+      tags: [hardening]
+
+    - name: sshd 配置预检（防坏配置 restart 后整批 unreachable）
+      ansible.builtin.command: sshd -t
+      changed_when: false
+      tags: [hardening]
+
+    # ---------- time ----------
+    # 节点容器 dbus 服务未运行（labnode 环境事实，实测 inactive），timedatectl
+    # 会 "Failed to connect to bus"；改用 zoneinfo 符号链接方案（无 DBus 依赖）
+    - name: 对齐本地时区（/etc/localtime → zoneinfo）
+      ansible.builtin.file:
+        src: "/usr/share/zoneinfo/{{ timezone }}"
+        dest: /etc/localtime
+        state: link
+        force: true
+      tags: [time]
+
+    - name: 写入时区名（Debian 约定 /etc/timezone）
+      ansible.builtin.copy:
+        content: "{{ timezone }}\n"
+        dest: /etc/timezone
+        owner: root
+        group: root
+        mode: "0644"
+      tags: [time]
+
+    - name: 安装 chrony（NTP 客户端，交付配置但不运行）
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+      tags: [time]
+
+    - name: 屏蔽 chronyd（容器与宿主共享内核，防 privileged 容器调宿主时钟）
+      ansible.builtin.systemd:
+        name: chrony
+        state: stopped
+        enabled: false
+        masked: true
+      tags: [time]
+
+    # ---------- kernel ----------
+    # ansible-core 2.15 无 builtin.sysctl（属 community.general，平台容器零 collections），
+    # 用「模板持久化 + 逐参数比对后 sysctl -w」实现等价幂等
+    - name: 下发内核参数持久化配置
+      ansible.builtin.template:
+        src: sysctl-opsforge.conf.j2
+        dest: /etc/sysctl.d/99-opsforge.conf
+        owner: root
+        group: root
+        mode: "0644"
+      tags: [kernel]
+
+    - name: 读取当前内核参数值
+      ansible.builtin.command: "sysctl -n {{ item.key }}"
+      loop: "{{ kernel_params | dict2items }}"
+      register: kp_now
+      changed_when: false
+      tags: [kernel]
+
+    - name: 应用与期望不符的内核参数
+      ansible.builtin.command: "sysctl -w {{ item.item.key }}={{ item.item.value }}"
+      loop: "{{ kp_now.results }}"
+      when: item.stdout | trim != item.item.value | string
+      loop_control:
+        label: "{{ item.item.key }}"
+      tags: [kernel]
+
+  handlers:
+    - name: 重启 sshd
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted

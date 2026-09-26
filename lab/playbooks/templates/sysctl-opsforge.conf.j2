@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# 内核参数（privileged 容器与 WSL2 宿主共享内核，参数均为低危值，
+# 重启后由 systemd-sysctl 读取本文件恢复）
+{% for k, v in kernel_params | dict2items %}
+{{ k }} = {{ v }}
+{% endfor %}

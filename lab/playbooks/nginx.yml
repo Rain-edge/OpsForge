@@ -1,0 +1,45 @@
+---
+# nginx.yml — web 组 Nginx 部署
+#
+# handler 优雅重载路径：模板变更 → notify → play 末尾服务已 start 后执行 reload。
+# 首次执行 install/template 均 changed，handler 必触发；重跑内容不变 handler 不触发（幂等）。
+- hosts: web
+  become: true
+  gather_facts: false
+  tasks:
+    - name: 安装 Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: 下发站点配置（覆盖 Debian 默认站点）
+      ansible.builtin.template:
+        src: nginx-site.conf.j2
+        dest: /etc/nginx/sites-available/default
+        owner: root
+        group: root
+        mode: "0644"
+      notify: 优雅重载 Nginx
+
+    - name: 下发首页（渲染节点名，验证模板分发与节点区分）
+      ansible.builtin.template:
+        src: index.html.j2
+        dest: /var/www/html/index.html
+        owner: root
+        group: root
+        mode: "0644"
+      notify: 优雅重载 Nginx
+
+    - name: 启动并开机自启
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+        enabled: true
+
+  handlers:
+    - name: 优雅重载 Nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded

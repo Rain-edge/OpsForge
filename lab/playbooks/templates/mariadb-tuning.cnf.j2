@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# MariaDB 低内存调优（节点 mem_limit 256m）+ server-id 唯一化
+# 先于 apt 安装落盘到 mariadb.conf.d/60-opsforge.cnf（后于 50-server.cnf 加载，覆盖生效）
+[mysqld]
+skip-name-resolve
+performance_schema = OFF
+innodb_buffer_pool_size = {{ mariadb_innodb_buffer_pool }}
+max_connections = {{ mariadb_max_connections }}
+bind-address = 0.0.0.0
+
+# server-id 唯一化：db-01 -> 101, db-02 -> 102（接口约定：模板保证每节点唯一）
+server-id = {{ 100 + (inventory_hostname.split('-')[1] | int) }}
+
+# 主从复制：binlog（主）与 relay log（从）统一显式路径，备节点可提主
+log_bin = /var/log/mysql/mariadb-bin
+log_bin_index = /var/log/mysql/mariadb-bin.index
+expire_logs_days = 3
+relay_log = /var/log/mysql/mariadb-relay

@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Sentinel 配置（模板仅首部署写入 force=no；运行后 sentinel 会改写本文件加入自管状态）
+port 26379
+dir /var/lib/redis
+logfile /var/log/redis/sentinel.log
+# monitor 目标用容器名（docker DNS），需开启 hostname 解析（Redis 6.2+）
+sentinel resolve-hostnames yes
+sentinel announce-hostnames yes
+sentinel monitor {{ redis_master_name }} {{ redis_master_host }} 6379 {{ sentinel_quorum }}
+sentinel auth-pass {{ redis_master_name }} {{ redis_password }}
+sentinel down-after-milliseconds {{ redis_master_name }} {{ sentinel_down_after_ms }}
+sentinel failover-timeout {{ redis_master_name }} 20000
+sentinel parallel-syncs {{ redis_master_name }} 1
