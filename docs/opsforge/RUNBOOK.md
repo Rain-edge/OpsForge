@@ -485,3 +485,70 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
   消息落 `/tmp/heal-mock/`；webhook URL 从 `heal_webhook.env` 读（env 优先，
   文件兜底——supervisor 常驻进程吃不到运行期注入的 env，文件是实验场景的
   覆盖通道）。
+
+## 15. 网络探测与设备备份（2026-09-23）
+
+发挥网络工程背景的模块：批量端口/链路探测矩阵 + netmiko 设备配置备份与变更审计。
+详细实验数据见 `docs/opsforge/experiments/2026-10-02-full-replay.md`。
+
+### 15.1 运行形态
+
+- **探测矩阵**：默认内置 `apps/ansible_ops/net/matrix.yaml`（9 目标 20 检查项），
+  env `OPSFORGE_PROBE_MATRIX` 覆盖；asyncio ≤50 并发，ICMP=系统 ping 子进程、
+  TCP=open_connection。快照落 `net_probe_runs`，前端矩阵页 /ansible/net-probe 绿/红渲染。
+- **断链告警**：连续 ≥3 次失败（`OPSFORGE_NET_FAIL_THRESHOLD`）→ Alarm('1')，恢复
+  → Alarm('2')（duration=断链秒数）；走告警自愈的 post_save 挂点，告警名含
+  "网络断链"不匹配自愈规则关键字，自然旁路。手动与定时轮共用状态机。
+- **设备备份**：netmiko==4.6.0 `linux` 驱动 SSH + vtysh 采 `show running-config`；
+  落 `storage/netbackup/{device}/{ts}.cfg`（storage 持久卷），内容变化才写新文件
+  + 落 `net_config_changes`（diff 相邻不同版本）。口令：env `OPS_PASSWORD` 优先，
+  `storage/net_devices.env` 兜底（KEY=VALUE，不入库不入镜像）。
+- **调度**：supervisor program `opsforge-net` = `run_net --loop`，探测 30s /
+  备份 120s（env `OPSFORGE_NET_PROBE_INTERVAL` / `OPSFORGE_NET_BACKUP_INTERVAL`）。
+- **API**：`POST /api/ansible_ops/net-probe/run/`（手动探测，同步返回矩阵）、
+  `GET net-probe/latest/`、`GET netbackup/`（设备版本+变更 50 条）、
+  `GET netbackup/{device}/files/{ts}/`（任意版本内容回溯）。
+
+### 15.2 FRR 实验设备（lab/net/）
+
+```bash
+docker compose -f lab/net/docker-compose.yml up -d --build   # r1/r2，复用 lab/nodes/.env 口令
+docker exec r1 vtysh -c 'show running-config'                # 根用户直查
+ssh -p 2231 ops@localhost                                    # 人工调试口（r2 用 2232）
+```
+
+- 镜像 `opsforge-frr:1.0`：frrouting/frr:latest（Alpine 3.16.2 / FRR 8.4_git）+
+  openssh-server + ops 用户（入 frr/frrvty 组才能跑 vtysh）。官方镜像**无 sshd**，
+  netmiko 必须派生；zebra+staticd 由 docker-start 强制启动，静态路由开箱可用。
+- 种子配置 `conf/r1|/r2/frr.conf` 只读挂载；运行态变更（vtysh conf t）重启即回种子，
+  实验可重复。privileged + mem_limit 128m（实测 ~40MB/台）。
+
+### 15.3 实测数据（2026-09-23）
+
+| 项 | 值 |
+|---|---|
+| 断链检出延迟（stop 节点 → Alarm'1'） | **69 s**（阈值 3 × 30s 探测间隔） |
+| 恢复检出延迟（start 节点 → Alarm'2'） | **5 s** |
+| 断链持续时长自动核算 | duration=179秒（与停机窗口吻合） |
+| FRR 配置变更检出延迟 | **22 s**（vtysh 注入路由 → 下轮 120s 备份轮） |
+| 矩阵规模 | 9 目标 20 检查项，单轮 <1s，ICMP RTT 0.0-0.5ms（容器网桥） |
+| 平台增量依赖 | netmiko==4.6.0（依赖树 pip-audit 零已知漏洞） |
+
+### 15.4 踩坑与建议
+
+- **Django 模型字段名避开 `check`**：`Model.check()` 是检查框架类方法，字段同名
+  触发 E020；`unique_together` 引用旧字段名报 E012——改字段名必须同步 Meta 约束
+  与手写迁移（实测两处各炸一次）。
+- **spug `json_response` 是 `{data, error}` 信封**：成功载荷在 `data` 键，测试
+  断言读 `body['data'][...]`；前端 http 封装已自动解信封，页面代码无感。
+- **FRR 官方镜像无 sshd**：`which sshd` 为空；netmiko 走 linux 驱动 SSH +
+  `send_command_timing`（不用 prompt 探测），vtysh 输出剥 `%` 前缀警告行即可，
+  shell 回显 netmiko 已处理。
+- **容器内 ICMP 亚毫秒 RTT**：`int()` 截断把 0.4ms 压成 0ms，延迟保留 1 位小数。
+- **备份版本文件名 = ts 字典序**：`%Y%m%d-%H%M%S` 定长格式字典序=时间序，
+  "最新版本"直接取排序末位；内容相同跳过写入防 720 文件/天的噪声。
+- ** Alpine 镜像换源**：`/etc/apk/repositories` sed USTC（同 web-builder 做法）；
+  entrypoint 覆盖后必须 `exec /sbin/tini -- /usr/lib/frr/docker-start` 回官方
+  入口，保住信号转发。
+- **net_devices.env 放 storage 卷**：容器重建不丢（heal_webhook.env 在镜像层，
+  重建即丢，本次任务口令文件刻意放持久卷内）。
