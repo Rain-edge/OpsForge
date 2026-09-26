@@ -1,9 +1,10 @@
 #!/bin/bash
-# Playbook 库临时工具：重置指定节点为裸机并重新纳管（重发平台公钥 + 清旧指纹）
+# Playbook 库工具：重置指定节点为裸机并重新纳管（重发平台公钥 + 清旧指纹）
 # 用法：bash reset_nodes.sh <name>:<host_id>:<group_id> ...
 #   例：bash reset_nodes.sh db-01:3:3 db-02:4:3
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 脚本位于 lab/scripts/，回退两级到仓库根（/.. 只到 lab/，曾因层级缺失打回）
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 tr -d '\r' < "${ROOT}/lab/nodes/.env" > /tmp/opsforge.env
 source /tmp/opsforge.env && rm -f /tmp/opsforge.env
 : "${SPUG_USER:?}"; : "${SPUG_PASS:?}"; : "${OPS_PASSWORD:?}"
