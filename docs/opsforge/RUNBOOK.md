@@ -375,3 +375,60 @@ master，直接重跑还与故障转移竞态，job 52 partial 如实记录）�
   `grep 'Slave_(IO|SQL)_Running'` 会多匹配 `Slave_SQL_Running_State`——匹配加尾随 `: `。
 - Debian 12 redis 包无 redis-sentinel.service/二进制 → playbook 自建 systemd unit。
 - MSYS 路径转换破坏 docker exec/cp 的容器路径 → `MSYS2_ARG_CONV_EXCL="/tmp;/data"`。
+
+## 13. 批量巡检报表（2026-09-19）
+
+### 13.1 运行形态
+
+```bash
+# 手动触发（或页面「Ansible 自动化 → 巡检报表 → 立即巡检」）
+curl -s -X POST "http://localhost/api/ansible_ops/inspection/run/?x-token=$TOKEN"
+# → {"data": {"report_id": N}}；列表 GET /inspections/、产物
+# GET /inspections/{id}/files/{html|xlsx|manifest}/[?dl=1]（?x-token= 鉴权）
+
+# CLI 单轮（调试）
+docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspection'
+```
+
+- **定时**：supervisor program `opsforge-inspection` 常驻 `run_inspection --loop`
+  （apscheduler，间隔 `OPSFORGE_INSPECTION_INTERVAL` 秒默认 300；启动即跑首轮，
+  重启自动把遗留 running 轮落 failed）。supervisor 增量段在 lab/docker/Dockerfile
+  追加，上游 docs/docker/spug.ini 原件未动；选 supervisor 而非 crontab 的理由见踩坑记录。
+- **采集通道**：复用引擎动态 inventory + `ansible all -m shell -b`，6 检查合并一条
+  采集脚本（base64 拼单行 JSON），7 节点单轮 ~1s；并发名额与手动执行共享
+  MAX_JOBS=2（采集阶段排队最多 120s）。
+- **检查协议**：`CHECKS = {name: fn}`，`check(runner, host) -> CheckResult(ok|warn|
+  crit)`，新增检查只需在 `inspection/checks.py` 注册；阈值常量在同文件头部。
+- **产物**：`storage/reports/inspection-{report_id}-{ts}.{html|xlsx|manifest.json}`；
+  diff 基线 = 最近一条成功轮 manifest。阈值口径：内存/磁盘 >85 warn >95 crit；
+  PSI avg60 >20 warn >50 crit；证书剩余 <30d warn <7d crit；端口检查仅对装了
+  nginx 的节点生效（80 的监听者必须为 nginx）。
+
+### 13.2 实测数据（2026-09-19）
+
+| 轮次 | 触发 | 结果 | 耗时 | 说明 |
+|---|---|---|---|---|
+| report 8 | manual | 42 ok | ~1s | 健康基线轮 |
+| report 9 | manual | 37 ok / **5 crit** | ~1s | 3 类故障 3/3 检出 |
+| report 10 | manual | 42 ok | ~1s | 恢复轮，diff 记录 crit→ok ×5 |
+| report 11 | scheduled | 42 ok | ~2s | 定时器自动轮（300s 周期） |
+
+- 故障注入：db-01 tmpfs 写满（disk）/ web-01 停 nginx（process+port）/ web-02
+  python3 占 80（port 被占用 + process）。明细与注入命令见
+  `experiments/2026-10-02-full-replay.md`。
+- pytest 100/100（77 既有 + 23 新增）；本次任务零新增依赖，openpyxl（上游既有）
+  pip-audit 无已知漏洞。
+
+### 13.3 踩坑清单（新增）
+
+- ansible shell 结果行解析必须吃满整行 + re.M（残片毁 JSON / 漏主机），详见
+  experiments 踩坑 1-3（采集脚本 JSON 引号配对、base64 尾换行）。
+- v4.0.1 运行容器 settings 无 TEMPLATES（上游后端零模板渲染）→ 用独立
+  `django.template.Engine(dirs=[...])`，别动上游 settings。
+- USE_TZ=False（运行容器）：`timezone.localtime()` 对 naive 抛异常；证书到期一律
+  aware UTC 计算不受 settings 影响。
+- 节点巡检口径：/proc/loadavg、/proc/meminfo 在容器里是宿主值——内存读 cgroup v2
+  （memory.max/current），CPU 读 cpu.pressure PSI。
+- `pkill -f <关键字>` 会匹配 docker exec 自身命令行（自杀 exit 143）。
+- pytest-django 事务 + 真线程池 = 独立连接看不见夹具数据 → 测试把
+  `_pool.submit` mock 成同步。
