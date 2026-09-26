@@ -432,3 +432,56 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python manage.py run_inspectio
 - `pkill -f <关键字>` 会匹配 docker exec 自身命令行（自杀 exit 143）。
 - pytest-django 事务 + 真线程池 = 独立连接看不见夹具数据 → 测试把
   `_pool.submit` mock 成同步。
+
+## 14. 告警闭环自愈（2026-09-21）
+
+### 14.1 架构与挂点
+
+- **挂点零侵入**：`post_save(Alarm)` signal（`ansible_ops/heal/signals.py`，注册于
+  `apps.py ready()`）。上游 monitor 的告警落库点 `handle_notify → Alarm.objects.create`
+  即事件源，上游文件零改动。信号只认 `status='1'`（报警发生），恢复告警不触发。
+- **闭环线程**：signal 同步段只做匹配+去重；闭环主体（前复检 → playbook →
+  后复检 → 判定 → 外发）在 daemon 线程，不占 monitor worker 线程池配额。
+- **复检复用 INSP 单项插件**：`run_collection([host])` 单主机采集 + `CHECKS[name]`
+  单项判定，与巡检报告同口径。
+- **自愈执行复用执行引擎**：进程内建 AnsibleJob + `try_acquire_slot`（与手动
+  执行/巡检共享 MAX_JOBS=2）+ `submit_job`，同步轮询终态（300s 预算）。
+- **防自愈风暴三道闸**：冷却窗口 / 闭环进行中去重 / 前复检已恢复则不跑 playbook。
+
+### 14.2 验证核对清单（实测过）
+
+1. `HealRule` CRUD：`POST /api/ansible_ops/heal-rules/`（keyword/host/playbook/
+   check_name/cooldown，check_name 校验必须在 CHECKS 注册表内）。
+2. 注入 `docker exec web-01 systemctl stop nginx` → 告警（worker.log
+   "send fault alarm notification"）→ HealEvent running → playbook job →
+   复检 crit→ok → recovered + 双渠道 webhook 消息（含 job 号）。
+3. 端到端 12.3s–67.1s（6 样本 4/6 ≤60s；瓶颈=1 分钟检测相位，闭环段恒定
+   2.1–3.4s）；2026-10-02 从零重建后复跑端到端 30s（闭环 3.2s）。详见
+   experiments/2026-10-02-full-replay.md。
+4. 冷却抑制：恢复后 57s 内再注入 → suppressed（不建 job、不自愈）；冷却过期后
+   下一轮告警正常自愈（故障不会因冷却无人认领）。
+5. 失败升级路径单测覆盖（job 失败 / 复检未恢复 / 名额满）。
+
+### 14.3 踩坑与建议
+
+- **signal sender 字符串用 app_label**：`'alarm.Alarm'` 而非 `'apps.alarm.Alarm'`
+  ——INSTALLED_APPS 是 `apps.alarm`，label 取最后段；写错启动即炸
+  `makemigrations --check`。
+- **JsonParser 未传字段填 None**：`create(**form)` 会把 None 显式塞给
+  非空字段（NOT NULL failed）；PUT 部分更新要 `if v is not None` 过滤，
+  否则把没传的字段写 NULL。
+- **Argument 加 default 后 help 会丢**：filter 校验失败的报错退化成
+  "Value Error: check failed"——help 参数必须同在。
+- **测试外发静音**：heal 单测若不 mute `notify_heal_report`，测试事件会经
+  HTTP 打到 `heal_webhook.env` 指向的真实渠道（实测漏出 20 条到 mock）。
+  mute fixture 必须 autouse。
+- **watch 类观察脚本的窗口口径**：按 `created_at >= now-90s` 过滤会捞到上一轮
+  的旧终态事件假返回（实测 round3/4 数据作废）；改为"只认本进程启动后创建的
+  事件"（started 时刻过滤）。另：MSYS 下 `docker exec spug python3 /tmp/x.py`
+  必须 `MSYS2_ARG_CONV_EXCL="/tmp;/data"`，否则路径被转换成 Windows 形态且
+  stderr 一吞就静默失败。
+- **IAB fullPage 截图有双列伪影**：消息页用高视口（1400）+ 普通 viewport 截图。
+- **mock 读取与运行**：容器内 `docker exec -d spug python3 /tmp/mock_webhook.py`，
+  消息落 `/tmp/heal-mock/`；webhook URL 从 `heal_webhook.env` 读（env 优先，
+  文件兜底——supervisor 常驻进程吃不到运行期注入的 env，文件是实验场景的
+  覆盖通道）。
