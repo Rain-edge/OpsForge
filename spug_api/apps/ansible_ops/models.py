@@ -2,7 +2,7 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 # OpsForge：Ansible 执行引擎；Playbook 管理 增加 Playbook 模型与 job 外键升级；
-# 巡检报表增加巡检报告模型
+# 巡检报表增加巡检报告模型；告警自愈增加自愈规则与闭环事件模型
 from django.db import models
 from libs import ModelMixin, human_datetime
 from apps.account.models import User
@@ -130,4 +130,92 @@ class InspectionReport(models.Model, ModelMixin):
 
     class Meta:
         db_table = 'inspection_reports'
+        ordering = ('-id',)
+
+
+class HealRule(models.Model, ModelMixin):
+    """告警自愈规则：告警匹配条件 → 修复 Playbook + 冷却窗口。
+
+    匹配口径（heal.service.handle_alert）：match_keyword 对「告警目标 + 消息」
+    做不区分大小写的子串匹配；match_host 非空时再限定告警主机名。
+    check_name 指定复检调用的 INSP 单项插件（inspection.CHECKS 注册名）。
+    """
+    name = models.CharField(max_length=100, unique=True)
+    match_keyword = models.CharField(max_length=255, default='')
+    match_host = models.CharField(max_length=100, default='')
+    # PROTECT：闭环中/历史事件引用的 playbook 与规则创建人不可删
+    playbook = models.ForeignKey('Playbook', models.PROTECT, related_name='+')
+    extra_vars = models.TextField(default='{}')
+    check_name = models.CharField(max_length=20, default='process')
+    cooldown = models.IntegerField(default=10)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(User, models.PROTECT, related_name='+')
+    created_at = models.CharField(max_length=20, default=human_datetime)
+    updated_at = models.CharField(max_length=20, null=True)
+
+    def to_view(self):
+        tmp = self.to_dict()
+        tmp['playbook_name'] = self.playbook.name if self.playbook_id else '-'
+        tmp['created_by'] = self.created_by.nickname if self.created_by_id else '-'
+        return tmp
+
+    def __repr__(self):
+        return '<HealRule %r>' % self.name
+
+    class Meta:
+        db_table = 'heal_rules'
+        ordering = ('-id',)
+
+
+class HealEvent(models.Model, ModelMixin):
+    """一次自愈闭环全链路记录（约定：alert 来源、rule、job、
+    before/after 状态、耗时 ms）。
+
+    status 语义：
+      running    闭环执行中
+      recovered  复检恢复（含自愈前复检已恢复的"误报/先愈"路径）
+      failed     自愈失败或复检确认未恢复（触发人工介入升级消息）
+      suppressed 命中冷却窗口或同规则同主机闭环进行中，未触发自愈（防自愈风暴）
+    """
+    STATUS_RUNNING = 'running'
+    STATUS_RECOVERED = 'recovered'
+    STATUS_FAILED = 'failed'
+    STATUS_SUPPRESSED = 'suppressed'
+
+    STATUS_CHOICES = (
+        (STATUS_RUNNING, '闭环执行中'),
+        (STATUS_RECOVERED, '自愈成功'),
+        (STATUS_FAILED, '自愈失败'),
+        (STATUS_SUPPRESSED, '冷却抑制'),
+    )
+
+    rule = models.ForeignKey(HealRule, models.PROTECT, related_name='events')
+    host = models.CharField(max_length=100, default='')
+    # 告警来源：alarm.Alarm 记录 id（post_save signal 挂点）与检测任务名。
+    # 用 IntegerField 而非跨 app 外键：Alarm 表可能被运维清空，置空引用不悬空
+    alert_id = models.IntegerField(null=True)
+    alert_name = models.CharField(max_length=100, default='')
+    alert_target = models.CharField(max_length=255, default='')
+    alert_message = models.TextField(null=True)
+    before_status = models.CharField(max_length=20, default='')
+    after_status = models.CharField(max_length=20, null=True)
+    job = models.ForeignKey(AnsibleJob, models.SET_NULL, null=True, related_name='+')
+    status = models.CharField(max_length=20, default=STATUS_RUNNING, choices=STATUS_CHOICES)
+    detail = models.TextField(default='{}')
+    duration_ms = models.IntegerField(null=True)
+    created_at = models.CharField(max_length=20, default=human_datetime)
+    finished_at = models.CharField(max_length=20, null=True)
+
+    def to_view(self):
+        tmp = self.to_dict()
+        tmp['detail'] = json.loads(self.detail)
+        tmp['rule_name'] = self.rule.name if self.rule_id else '-'
+        tmp['job_id'] = self.job_id
+        return tmp
+
+    def __repr__(self):
+        return '<HealEvent %r>' % self.id
+
+    class Meta:
+        db_table = 'heal_events'
         ordering = ('-id',)

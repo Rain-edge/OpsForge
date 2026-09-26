@@ -2,13 +2,15 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 # OpsForge：Ansible 执行引擎 API；实时回传增加任务终止；
-# Playbook 管理 增加 Playbook 管理与版本化路由；巡检报表增加巡检报告路由
+# Playbook 管理 增加 Playbook 管理与版本化路由；巡检报表增加巡检报告路由；
+# 告警自愈增加自愈规则路由
 from django.urls import path
 
 from apps.ansible_ops.views import (
     ExecView, JobListView, JobDetailView, JobKillView,
     PlaybookListView, PlaybookDetailView, PlaybookVersionsView, PlaybookRollbackView,
-    InspectionListView, InspectionRunView, InspectionDetailView, InspectionFileView)
+    InspectionListView, InspectionRunView, InspectionDetailView, InspectionFileView,
+    HealRuleListView, HealRuleDetailView)
 
 urlpatterns = [
     path('exec/', ExecView.as_view()),
@@ -24,4 +26,7 @@ urlpatterns = [
     path('inspections/', InspectionListView.as_view()),
     path('inspections/<int:pk>/', InspectionDetailView.as_view()),
     path('inspections/<int:pk>/files/<str:kind>/', InspectionFileView.as_view()),
+    # 约定路由：自愈规则 CRUD
+    path('heal-rules/', HealRuleListView.as_view()),
+    path('heal-rules/<int:pk>/', HealRuleDetailView.as_view()),
 ]

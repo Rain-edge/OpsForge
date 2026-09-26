@@ -3,13 +3,14 @@
 # Released under the AGPL-3.0 License.
 # OpsForge：Ansible 执行引擎 API；实时回传增加任务终止；
 # Playbook 管理 增加 Playbook 管理与版本化 API，并放开 exec 的 playbook 执行；
-# 巡检报表增加巡检报告 API（列表 / 手动触发 / 详情 / 产物下载）
+# 巡检报表增加巡检报告 API（列表 / 手动触发 / 详情 / 产物下载）；
+# 告警自愈增加自愈规则 CRUD API
 from django.views.generic import View
 from django.core.paginator import Paginator
 from django.http import FileResponse
 from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, auth, human_datetime
-from apps.ansible_ops.models import AnsibleJob, Playbook, InspectionReport
+from apps.ansible_ops.models import AnsibleJob, Playbook, InspectionReport, HealRule
 from apps.ansible_ops.executor import (
     submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY, PID_KEY, KILL_KEY)
 from apps.ansible_ops.inspection.service import submit_round
@@ -368,3 +369,86 @@ class InspectionFileView(View):
         if request.GET.get('dl'):
             response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+
+class HealRuleListView(View):
+    """自愈规则 CRUD（约定路由 /api/ansible_ops/heal-rules/）。"""
+    @auth('ansible_ops.view')
+    def get(self, request):
+        return json_response(HealRule.objects.all())
+
+    @auth('ansible_ops.exec')
+    def post(self, request):
+        from apps.ansible_ops.inspection import CHECKS
+        form, error = JsonParser(
+            Argument('id', type=int, required=False),
+            Argument('name', help='请输入规则名称'),
+            Argument('match_keyword', help='请输入告警匹配关键字'),
+            Argument('match_host', required=False),
+            Argument('playbook_id', type=int, help='请选择自愈 Playbook'),
+            Argument('extra_vars', type=dict, required=False, default={}),
+            Argument('check_name', filter=lambda x: x in CHECKS, default='process', help='复检检查项无效'),
+            Argument('cooldown', type=int, default=10),
+            Argument('is_active', type=bool, default=True),
+        ).parse(request.body)
+        if error is None:
+            if form.cooldown < 1:
+                return json_response(error='冷却时间至少 1 分钟')
+            if not Playbook.objects.filter(pk=form.playbook_id).exists():
+                return json_response(error='自愈 Playbook 不存在，请刷新后重试')
+            # JsonParser 对未传的可选字段填 None：match_host/check_name 非空约束
+            # 字段需落成空串（match_host 空串=不限定主机，同模型 default）
+            form.match_host = form.match_host or ''
+            form.extra_vars = json.dumps(form.extra_vars)
+            if form.id:
+                form.updated_at = human_datetime()
+                HealRule.objects.filter(pk=form.id).update(**form)
+            else:
+                form.created_by = request.user
+                HealRule.objects.create(**form)
+        return json_response(error=error)
+
+
+class HealRuleDetailView(View):
+    @auth('ansible_ops.exec')
+    def put(self, request, pk):
+        rule = HealRule.objects.filter(pk=pk).first()
+        if not rule:
+            return json_response(error='自愈规则不存在')
+        from apps.ansible_ops.inspection import CHECKS
+        form, error = JsonParser(
+            Argument('name', required=False),
+            Argument('match_keyword', required=False),
+            Argument('match_host', required=False),
+            Argument('playbook_id', type=int, required=False),
+            Argument('extra_vars', type=dict, required=False),
+            Argument('check_name', required=False),
+            Argument('cooldown', type=int, required=False),
+            Argument('is_active', type=bool, required=False),
+        ).parse(request.body)
+        if error is None:
+            if form.cooldown is not None and form.cooldown < 1:
+                return json_response(error='冷却时间至少 1 分钟')
+            if form.playbook_id and not Playbook.objects.filter(pk=form.playbook_id).exists():
+                return json_response(error='自愈 Playbook 不存在，请刷新后重试')
+            if form.check_name is not None and form.check_name not in CHECKS:
+                return json_response(error='复检检查项无效')
+            # 部分更新语义：剔除未传字段（JsonParser 填 None），None 即"不修改"
+            updates = {k: v for k, v in form.items() if v is not None}
+            if updates.get('extra_vars') is not None:
+                updates['extra_vars'] = json.dumps(updates['extra_vars'])
+            updates['updated_at'] = human_datetime()
+            HealRule.objects.filter(pk=pk).update(**updates)
+        return json_response(error=error)
+
+    @auth('ansible_ops.exec')
+    def delete(self, request, pk):
+        rule = HealRule.objects.filter(pk=pk).first()
+        if not rule:
+            return json_response(error='自愈规则不存在')
+        try:
+            rule.delete()
+        except Exception:
+            # PROTECT：已有闭环事件引用的规则不可删（同报警组被引用拒绝删除的口径）
+            return json_response(error='该规则已有自愈闭环记录，无法删除（可置为停用）')
+        return json_response(error=None)
