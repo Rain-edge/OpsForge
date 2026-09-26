@@ -32,6 +32,7 @@ import AnsibleExec from './pages/ansible/Exec';      // OpsForge: 实时回传
 import AnsibleJobs from './pages/ansible/Jobs';      // OpsForge: 实时回传
 import AnsiblePlaybooks from './pages/ansible/Playbooks';  // OpsForge: Playbook 管理
 import AnsibleInspections from './pages/ansible/Inspections';  // OpsForge: 巡检报表
+import AnsibleNetProbe from './pages/ansible/NetProbe';  // OpsForge: 网络模块
 import DeployApp from './pages/deploy/app';
 import DeployRepository from './pages/deploy/repository';
 import DeployRequest from './pages/deploy/request';
@@ -78,6 +79,7 @@ export default [
       {title: t('执行任务'), path: '/ansible/exec', component: AnsibleExec},
       {title: t('Playbook 管理'), path: '/ansible/playbooks', component: AnsiblePlaybooks},
       {title: t('巡检报表'), path: '/ansible/inspections', component: AnsibleInspections},
+      {title: t('网络探测'), path: '/ansible/net-probe', component: AnsibleNetProbe},
       {title: t('执行历史'), path: '/ansible/jobs', component: AnsibleJobs},
     ]
   },
