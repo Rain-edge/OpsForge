@@ -1,0 +1,31 @@
+# OpsForge默认探测矩阵：7 台被管节点 + 2 台 FRR 设备。
+# 主机名经容器 DNS 解析（同一 docker 网络）；web 节点含 TCP 80（nginx 基线）。
+# 可用环境变量 OPSFORGE_PROBE_MATRIX 指向自定义文件覆盖本默认。
+targets:
+  - name: web-01
+    icmp: true
+    tcp: [22, 80]
+  - name: web-02
+    icmp: true
+    tcp: [22, 80]
+  - name: db-01
+    icmp: true
+    tcp: [22]
+  - name: db-02
+    icmp: true
+    tcp: [22]
+  - name: cache-01
+    icmp: true
+    tcp: [22]
+  - name: cache-02
+    icmp: true
+    tcp: [22]
+  - name: cache-03
+    icmp: true
+    tcp: [22]
+  - name: r1
+    icmp: true
+    tcp: [22]
+  - name: r2
+    icmp: true
+    tcp: [22]

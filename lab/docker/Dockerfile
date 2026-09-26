@@ -77,9 +77,10 @@ RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
     mysqlclient \
     cryptography
 
-# OpsForge 增量依赖
+# OpsForge 增量依赖（增 netmiko：设备配置备份，容器内实测 4.6.0 兼容既有 paramiko 3.4）
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
     ansible-core==2.15.13 \
+    netmiko==4.6.0 \
     pytest==8.3.4 \
     pytest-django==4.9.0
 
@@ -124,13 +125,18 @@ COPY lab/docker/spug_overrides.py /data/spug/spug_api/spug/overrides.py
 
 RUN mkdir -p /data/repos /var/log/supervisor /run/nginx \
     /data/spug/spug_api/storage/ansible_logs \
-    /data/spug/spug_api/storage/reports
+    /data/spug/spug_api/storage/reports \
+    /data/spug/spug_api/storage/netbackup
 
 # OpsForge 定时巡检调度：向 supervisor 追加常驻 program（内部
 # apscheduler 按 OPSFORGE_INSPECTION_INTERVAL 秒触发，默认 300）。上游
 # docs/docker/spug.ini 原件不动，增量只在此追加段；选 supervisor 而非 crontab
 # 的理由（crontab 不继承容器 env 的 MySQL 口令等）见踩坑记录
 RUN printf '\n[program:opsforge-inspection]\ncommand = python manage.py run_inspection --loop\ndirectory = /data/spug/spug_api\nautostart = true\nstartsecs = 3\nstdout_logfile = /data/spug/spug_api/logs/inspection.log\nredirect_stderr = true\n' >> /etc/supervisord.conf
+
+# OpsForge 网络探测与设备备份调度：探测 30s / 备份 120s 各一 job
+# （间隔 env OPSFORGE_NET_PROBE_INTERVAL / OPSFORGE_NET_BACKUP_INTERVAL 可调）
+RUN printf '\n[program:opsforge-net]\ncommand = python manage.py run_net --loop\ndirectory = /data/spug/spug_api\nautostart = true\nstartsecs = 3\nstdout_logfile = /data/spug/spug_api/logs/net.log\nredirect_stderr = true\n' >> /etc/supervisord.conf
 
 EXPOSE 80
 ENTRYPOINT ["/entrypoint.sh"]

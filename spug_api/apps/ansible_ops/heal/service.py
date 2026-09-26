@@ -61,6 +61,10 @@ def _handle_alert(alarm):
     from apps.ansible_ops.inspection import CHECKS
     from apps.host.models import Host
 
+    # 网络模块网络断链告警不参与自愈：断链（节点停机/链路不通）不是 heal playbook
+    # 可修复的故障类型；且其 target 即节点名，易与进程类规则的关键字撞车造成误触发
+    if alarm.type == '网络探测':
+        return
     # 进程/脚本检测的 target 形如 'web-01(172.18.0.11)'（monitor 拼装），
     # 取括号前的主机名反查 Host；其余类型（站点/端口/Ping）反查不到则不触发
     host = Host.objects.filter(name=(alarm.target or '').split('(')[0]).first()

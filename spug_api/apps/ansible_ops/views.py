@@ -4,13 +4,16 @@
 # OpsForge：Ansible 执行引擎 API；实时回传增加任务终止；
 # Playbook 管理 增加 Playbook 管理与版本化 API，并放开 exec 的 playbook 执行；
 # 巡检报表增加巡检报告 API（列表 / 手动触发 / 详情 / 产物下载）；
-# 告警自愈增加自愈规则 CRUD API
+# 告警自愈增加自愈规则 CRUD API；网络模块增加网络探测与设备备份 API
 from django.views.generic import View
 from django.core.paginator import Paginator
 from django.http import FileResponse
 from django_redis import get_redis_connection
 from libs import json_response, JsonParser, Argument, auth, human_datetime
-from apps.ansible_ops.models import AnsibleJob, Playbook, InspectionReport, HealRule
+from apps.ansible_ops.models import (
+    AnsibleJob, Playbook, InspectionReport, HealRule, NetProbeRun, NetConfigChange)
+from apps.ansible_ops.net.backup import load_devices, netbackup_dir
+from apps.ansible_ops.net.probe import run_round
 from apps.ansible_ops.executor import (
     submit_job, LOG_DIR, MAX_JOBS, RUNNING_KEY, PID_KEY, KILL_KEY)
 from apps.ansible_ops.inspection.service import submit_round
@@ -452,3 +455,65 @@ class HealRuleDetailView(View):
             # PROTECT：已有闭环事件引用的规则不可删（同报警组被引用拒绝删除的口径）
             return json_response(error='该规则已有自愈闭环记录，无法删除（可置为停用）')
         return json_response(error=None)
+
+
+# ---- 网络探测与设备备份 ----
+
+class NetProbeRunView(View):
+    """手动触发一轮探测（约定路由 POST /api/ansible_ops/net-probe/run/）。
+
+    同步执行（默认矩阵 9 目标 × 2-3 项实测 <5s）直接返回矩阵快照；
+    与定时轮共用断链状态机（口径一致，见 net/probe.apply_state 注释）。
+    """
+    @auth('ansible_ops.exec')
+    def post(self, request):
+        try:
+            run = run_round(NetProbeRun.TRIGGER_MANUAL)
+        except ValueError as e:
+            # 矩阵文件缺失/非法：返回可读错误而非 500（前端弹窗可直接定位配置）
+            return json_response(error=f'探测矩阵加载失败：{e}')
+        return json_response(run.to_view())
+
+
+class NetProbeLatestView(View):
+    @auth('ansible_ops.view')
+    def get(self, request):
+        run = NetProbeRun.objects.first()
+        return json_response({'run': run.to_view() if run else None})
+
+
+class NetBackupView(View):
+    """设备备份总览：设备版本列表（新→旧）+ 变更记录（最近 50 条）。"""
+    @auth('ansible_ops.view')
+    def get(self, request):
+        base = netbackup_dir()
+        try:
+            device_list = load_devices()
+        except Exception as e:
+            # 坏设备清单降级为空列表而非 500：变更历史与版本回溯不受清单文件影响
+            return json_response({'devices': [], 'changes': [],
+                                  'error': f'设备清单加载失败：{e}'})
+        devices = []
+        for d in device_list:
+            device_dir = base / d['name']
+            versions = sorted((p.stem for p in device_dir.glob('*.cfg')), reverse=True)
+            devices.append({'name': d['name'], 'host': d['host'], 'versions': versions})
+        changes = [x.to_dict() for x in NetConfigChange.objects.all()[:50]]
+        return json_response({'devices': devices, 'changes': changes})
+
+
+class NetBackupFileView(View):
+    """单版本配置内容（回溯任意时间点，验收 3）。设备/版本标识白名单校验防穿越。"""
+    @auth('ansible_ops.view')
+    def get(self, request, device, name):
+        # 点号合法：自定义设备名可为 r1.core 形态（穿越已由 URL 分段 + realpath 兜底）
+        if not re.fullmatch(r'\d{8}-\d{6}', name) or not re.fullmatch(r'[A-Za-z0-9_.-]+', device):
+            return json_response(error='非法的设备或版本标识')
+        backup_root = netbackup_dir()
+        path = backup_root / device / f'{name}.cfg'
+        # 纵深防御：标识已白名单，真实路径越出备份目录时仍拒绝（同 InspectionFileView 口径）
+        if not path.resolve().is_relative_to(backup_root.resolve()):
+            return json_response(error='路径异常，已拒绝访问')
+        if not path.is_file():
+            return json_response(error='备份文件不存在')
+        return json_response({'device': device, 'name': name, 'content': path.read_text(encoding='utf-8')})

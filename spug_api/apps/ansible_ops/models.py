@@ -2,7 +2,8 @@
 # Copyright: (c) <spug.dev@gmail.com>
 # Released under the AGPL-3.0 License.
 # OpsForge：Ansible 执行引擎；Playbook 管理 增加 Playbook 模型与 job 外键升级；
-# 巡检报表增加巡检报告模型；告警自愈增加自愈规则与闭环事件模型
+# 巡检报表增加巡检报告模型；告警自愈增加自愈规则与闭环事件模型；
+# 网络模块增加网络探测与设备配置备份模型
 from django.db import models
 from libs import ModelMixin, human_datetime
 from apps.account.models import User
@@ -218,4 +219,83 @@ class HealEvent(models.Model, ModelMixin):
 
     class Meta:
         db_table = 'heal_events'
+        ordering = ('-id',)
+
+
+class NetProbeRun(models.Model, ModelMixin):
+    """一轮网络探测的矩阵快照。
+
+    cells 存全部（目标×检查项）结果 JSON：[{target, check, status, latency_ms,
+    detail}]，status ∈ ok|fail——与巡检 summary 同款"快照进库"惯例，前端矩阵
+    无需再读文件。轮次只在实际完成时建行（配置错误/进程崩溃无行）。
+    """
+    TRIGGER_MANUAL = 'manual'
+    TRIGGER_SCHEDULED = 'scheduled'
+
+    TRIGGER_CHOICES = (
+        (TRIGGER_MANUAL, '手动触发'),
+        (TRIGGER_SCHEDULED, '定时探测'),
+    )
+
+    trigger = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default=TRIGGER_MANUAL)
+    total_ok = models.IntegerField(default=0)
+    total_fail = models.IntegerField(default=0)
+    cells = models.TextField(default='[]')
+    created_at = models.CharField(max_length=20, default=human_datetime)
+
+    def to_view(self):
+        tmp = self.to_dict()
+        tmp['cells'] = json.loads(self.cells)
+        return tmp
+
+    def __repr__(self):
+        return '<NetProbeRun %r>' % self.id
+
+    class Meta:
+        db_table = 'net_probe_runs'
+        ordering = ('-id',)
+
+
+class NetTargetState(models.Model, ModelMixin):
+    """单个（目标×检查项）的断链状态机游标。
+
+    consecutive_failures 连续失败计数；达到阈值建断链告警并置 alarm_active，
+    恢复后建恢复告警并清零——告警只在状态跃迁时产生，见 net/probe.apply_state。
+    first_fail_at 记本次断链起点（恢复告警的 duration 展示值由此计算）。
+    """
+    target = models.CharField(max_length=100)
+    # 字段名不用 check：Model.check() 是 Django 检查框架的类方法，E020 冲突
+    check_name = models.CharField(max_length=50)
+    consecutive_failures = models.IntegerField(default=0)
+    alarm_active = models.BooleanField(default=False)
+    first_fail_at = models.CharField(max_length=20, null=True)
+    updated_at = models.CharField(max_length=20, default=human_datetime)
+
+    def __repr__(self):
+        return '<NetTargetState %r>' % self.id
+
+    class Meta:
+        db_table = 'net_target_states'
+        unique_together = ('target', 'check_name')
+        ordering = ('-id',)
+
+
+class NetConfigChange(models.Model, ModelMixin):
+    """设备配置变更记录（约定模型：device/from/to/diff/detected_at）。
+
+    命名偏差：约定字段 from/to 是 Python 保留字不能做模型属性名，落库为
+    from_ts/to_ts（取值=备份版本 ts，即 storage/netbackup/{device}/{ts}.cfg
+    的文件名主干），偏差已记录待确认（既定口径）。
+    """
+    device = models.CharField(max_length=100)
+    from_ts = models.CharField(max_length=20, default='')
+    to_ts = models.CharField(max_length=20)
+    diff = models.TextField(default='')
+    detected_at = models.CharField(max_length=20, default=human_datetime)
+
+    def __repr__(self):
+        return '<NetConfigChange %r>' % self.id
+
+    class Meta:
+        db_table = 'net_config_changes'
         ordering = ('-id',)

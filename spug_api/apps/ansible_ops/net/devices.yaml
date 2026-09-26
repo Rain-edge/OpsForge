@@ -1,0 +1,19 @@
+# OpsForge设备备份清单：netmiko 经 SSH 采集（linux 驱动 + vtysh）。
+# password_env 指向口令所在环境变量名（值本身走 env/配置文件兜底，见
+# backup._device_password，不落任何仓库文件）。可用环境变量
+# OPSFORGE_NET_DEVICES 指向自定义文件覆盖本默认。
+devices:
+  - name: r1
+    host: r1
+    port: 22
+    username: ops
+    password_env: OPS_PASSWORD
+    device_type: linux
+    command: "vtysh -c 'show running-config'"
+  - name: r2
+    host: r2
+    port: 22
+    username: ops
+    password_env: OPS_PASSWORD
+    device_type: linux
+    command: "vtysh -c 'show running-config'"
