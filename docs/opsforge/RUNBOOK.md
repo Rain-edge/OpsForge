@@ -323,3 +323,55 @@ docker exec spug sh -c 'cd /data/spug/spug_api && python -m pytest apps/ansible_
 # （作者"管理员"）→ diff 渲染正确 → 回滚 76a810b 内容字节级回退；坏 YAML 拒保存
 # 且 toast 展示 ansible ERROR 原文；管理页「执行」直达 exec 页联动 Job#24 真实
 # ping web-01 成功（recap ok=2 failed=0，WS 实时回传正常）。pytest 77/77 容器内全绿。
+
+## 12. Playbook 库与幂等验证（2026-09-16）
+
+> 数据与踩坑完整版：本节 + experiments/2026-10-02-full-replay.md
+
+### 运行形态
+
+```
+lab/playbooks/（仓库源，git 入库）
+   ├─ 4 个主 playbook ── import_playbooks.sh ──> 平台 Playbook 库（id 10-13，
+   │    syntax-check + git 版本化，平台内可编辑/回滚）
+   └─ group_vars/host_vars/templates ── docker cp ──> REPOS 卷
+        （/data/repos/ansible_ops/playbooks/，ansible-playbook 自动加载
+          playbook 同目录的这三个子目录，容器内已实测）
+执行：POST /api/ansible_ops/exec/ {host_ids, playbook_id, extra_vars}
+口令：group_vars 实验弱口令默认值 + extra_vars 覆盖（优先级最高）
+```
+
+### 四个 Playbook 与实测数据
+
+| Playbook | 目标节点 | 首跑（job） | 幂等二跑（job） | 关键结果 |
+| --- | --- | --- | --- | --- |
+| baseline | 全 7 台 | 54（45 changed） | 55（0） | 时区 CST、PermitRootLogin no、chrony masked、sysctl 3 参数生效 |
+| nginx | web-01/02 | 40（10） | 41（0） | handler「优雅重载」触发留证；X-Node/节点名渲染 |
+| mysql-master-slave | db-01/02 | 46（33s） | 47（0） | 双 Yes、server-id 101/102、主建表从可查；内存 123MiB |
+| redis-sentinel | cache-01/02/03 | 50（20s） | 51（0） | failover：检出→切换 1.1s（sentinel 日志链）；旧主自动转 replica |
+
+手工 vs Playbook 对比（验收 1 数据）：手工逐台搭主从净耗时 ~60s 且踩 3 坑
+（无 /var/log/mysql、-N 参数误判复制状态、policy-rc.d 不自启），含重试 ≈100s；
+Playbook 一键 33s 一次通过且可无限重复——**价值不在快，在可重复 + 幂等 + 零遗漏**。
+
+### 节点重置与重新纳管（节点重建后必读）
+
+节点 force-recreate 后 host key 与 authorized_keys 重置：平台 known_hosts 旧指纹冲突
++ 公钥丢失 → 任务 unreachable。恢复：`ssh-keygen -f /root/.ssh/known_hosts -R <节点>`
++ 平台「编辑主机」带 password 提交（接口 `_do_host_verify` 重发公钥）。
+
+### failover 恢复姿势
+
+failover 后重跑 redis-sentinel.yml 不能回到声明拓扑（sentinel.conf 被自改为监控新
+master，直接重跑还与故障转移竞态，job 52 partial 如实记录）。恢复 = 重置 cache 节点
+后重跑（job 53，20s 一键重建并恢复 cache-01 主）。
+
+### 踩坑（新增）
+
+- `ansible.builtin.sysctl` 不在 ansible-core 2.15（community.general 才有，平台零
+  collections）→ 模板持久化 + 逐参数比对后 `sysctl -w`。
+- privileged 容器 dbus 未运行，`timedatectl` 不可用 → /etc/localtime 符号链接方案。
+- `mysql -NBe "SHOW SLAVE STATUS\G"`：-N 去列名与 \G 组合后 grep 字段名必空；
+  `grep 'Slave_(IO|SQL)_Running'` 会多匹配 `Slave_SQL_Running_State`——匹配加尾随 `: `。
+- Debian 12 redis 包无 redis-sentinel.service/二进制 → playbook 自建 systemd unit。
+- MSYS 路径转换破坏 docker exec/cp 的容器路径 → `MSYS2_ARG_CONV_EXCL="/tmp;/data"`。
