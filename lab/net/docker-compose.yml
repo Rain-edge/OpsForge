@@ -1,0 +1,42 @@
+# OpsForge 网络设备实验编排——风格对齐节点编排（lab/nodes/）。
+#
+# 用法：复用节点环境的口令文件（env_file 指向 ../nodes/.env，不重复建 .env）
+#   docker compose -f lab/net/docker-compose.yml up -d --build
+#
+# 网络：接入平台网 docker_default（external），spug 容器可直连 r1/r2:22（netmiko）。
+# 端口：每设备映射宿主 2231/2232 供人工调试（ssh -p 2231 ops@localhost）。
+# 资源：每台 mem_limit 128m（FRR 运行占用远低于节点，7 节点预算外增量 ~0.2GB）。
+
+x-frr-base: &frr-base
+  build: .
+  image: opsforge-frr:1.0
+  restart: unless-stopped
+  privileged: true            # FRR 官方镜像运行要求（与节点容器同取舍）
+  mem_limit: 128m
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+  env_file: ../nodes/.env     # OPS_PASSWORD 来源；缺失时 compose 报错拒绝启动
+  networks:
+    - platform
+
+services:
+  r1:
+    <<: *frr-base
+    container_name: r1
+    hostname: r1
+    ports: ["127.0.0.1:2231:22"]
+    volumes:
+      - ./conf/r1/frr.conf:/etc/frr/frr.conf:ro   # 种子配置（只读；运行态变更走 vtysh，不回写）
+  r2:
+    <<: *frr-base
+    container_name: r2
+    hostname: r2
+    ports: ["127.0.0.1:2232:22"]
+    volumes:
+      - ./conf/r2/frr.conf:/etc/frr/frr.conf:ro
+
+networks:
+  platform:
+    name: docker_default
+    external: true
