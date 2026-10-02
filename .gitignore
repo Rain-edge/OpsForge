@@ -7,3 +7,7 @@
 spug_api/storage/
 # 巡检/实验报告输出
 reports/
+
+# Python
+__pycache__/
+*.pyc

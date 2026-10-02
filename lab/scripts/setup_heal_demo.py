@@ -114,7 +114,7 @@ def main():
         print(f'[SKIP ] {DEVICES_ENV_FILE} 已存在（--force 可覆盖）')
     else:
         with open(DEVICES_ENV_FILE, 'w', encoding='utf-8') as f:
-            f.write('# 网络模块设备口令兜底文件（env OPS_PASSWORD 优先；本文件不入库不入镜像，\n')
+            f.write('# 网络设备口令兜底文件（env OPS_PASSWORD 优先；本文件不入库不入镜像，\n')
             f.write('# storage 卷持久；由 lab/scripts/setup_heal_demo.sh 生成）\n')
             f.write(f'OPS_PASSWORD={ops_password}\n')
         os.chmod(DEVICES_ENV_FILE, 0o600)

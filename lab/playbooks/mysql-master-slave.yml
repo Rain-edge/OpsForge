@@ -4,7 +4,7 @@
 # 选型说明：节点 mem_limit 256m 跑不动 MySQL 8（空载 ~400MB），用 Debian 12
 # 自带 MariaDB 10.11（协议兼容，SHOW SLAVE STATUS 可用），如实记录于文档。
 #
-# 幂等要点（卡验收 3）：
+# 幂等要点（验收 3）：
 # - 低内存配置先于 apt 落盘，安装器启动即用低配，避免 256MB cgroup 内 OOM
 # - 复制账号先查后建，缺失才 CREATE+GRANT
 # - 从库先查 SHOW SLAVE STATUS，仅"未配置/线程中断"时才 STOP+CHANGE+START

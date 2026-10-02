@@ -3,7 +3,7 @@
 # Released under the AGPL-3.0 License.
 # OpsForge：巡检入口。
 #
-# 两种形态（定时方案经用户拍板：supervisor 常驻调度，见踩坑记录1）：
+# 两种形态（定时方案：supervisor 常驻调度）：
 #   默认     单轮执行（CLI 调试 / 实验脚本用），trigger=manual
 #   --loop   常驻调度（容器 supervisor program 用），按 OPSFORGE_INSPECTION_INTERVAL
 #            秒（默认 300）触发，trigger=scheduled；启动即先跑一轮

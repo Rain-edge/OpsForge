@@ -18,7 +18,7 @@ import urllib.request
 BASE_URL = 'http://localhost'
 API = BASE_URL + '/api'
 SRC_DIR = '/tmp/playbooks-src'
-DESCRIPTION = 'Playbook 库 playbook 库（源：lab/playbooks/，经 import.py 导入）'
+DESCRIPTION = 'Playbook 库（源：lab/playbooks/，经 import.py 导入）'
 
 
 def api(path, method='GET', payload=None, token=None):

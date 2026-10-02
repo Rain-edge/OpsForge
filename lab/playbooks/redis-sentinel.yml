@@ -5,7 +5,7 @@
 # 单 sentinel + quorum=1 即可自动故障转移（≥3 sentinel 才有 sentinel 自身高可用，
 # 实验环境如实记录；节点规划 cache×3 正是为哨兵演练留的拓扑位）。
 #
-# 幂等要点（卡验收 3）与已知局限（如实记录）：
+# 幂等要点（验收 3）与已知局限（如实记录）：
 # - redis.conf 模板幂等（redis-server 不改写自身配置）
 # - sentinel.conf 用 force=no 仅首部署写入：sentinel 运行后会改写该文件加入
 #   myid / known-* 自管状态，强覆盖会破坏 sentinel 状态并破坏幂等
