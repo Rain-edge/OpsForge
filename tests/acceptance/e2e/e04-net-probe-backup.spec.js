@@ -76,12 +76,16 @@ test('AC-E2E-04 断链矩阵红 → 告警 → 恢复回绿 → 备份 diff 检�
     await exec('docker', ['start', 'cache-03'], { timeout: 60_000 }).catch(() => {});
   }
 
-  // 4. 恢复回绿
+  // 4. 恢复回绿（节点刚重建时其服务就绪有快慢——轮询重试，最多 ~150s，与第 1 步同款防竞态）
   await page.goto('http://localhost/ansible/net-probe');
-  await page.locator('button:has-text("立即探测")').click();
-  await page.waitForTimeout(8000);
-  await page.reload();
-  await expect(page.getByText(/通 20 \/ 断 0/).first()).toBeVisible({ timeout: 60_000 });
+  await expect.poll(async () => {
+    await page.locator('button:has-text("立即探测")').click();
+    await page.waitForTimeout(8000);
+    await page.reload();
+    await expect(page.getByText('网络探测矩阵', { exact: true }).first())
+      .toBeVisible({ timeout: 15_000 }).catch(() => {});
+    return page.getByText(/通 20 \/ 断 0/).count();
+  }, { timeout: 150_000, intervals: [10_000, 20_000] }).toBeGreaterThan(0);
 
   // 5. 备份 diff：r1 运行态加一条静态路由 → 等下一备份轮（120s）→ 变更表新增
   await page.goto('http://localhost/ansible/net-probe');

@@ -309,7 +309,7 @@
   "oss_diff": {
    "baseline": "upstream/master",
    "measured_at": "2026-10-02（随提交增长）",
-   "total": "158 files changed, 13880 insertions(+), 118 deletions(-)",
+   "total": "158 files changed, 13884 insertions(+), 118 deletions(-)",
    "second_dev_groups": {
     "backend_app": {
      "files": 42,
@@ -350,7 +350,7 @@
    },
    "second_dev_subtotal": {
     "files": 141,
-    "added": 12213,
+    "added": 12216,
     "_note": "二开工作量口径（分组小计）"
    },
    "excluded": {
