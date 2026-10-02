@@ -620,8 +620,6 @@ ssh -p 2231 ops@localhost                                    # 人工调试口�
 | ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
 | ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
 | ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
 | 实验汇总       | `docs/opsforge/experiments/summary.json` | 全部量化指标的结构化汇总，每格带 source 指向原始记录           |
 | 二开统计       | `scripts/oss-diff.py`                    | `python scripts/oss-diff.py`（按目录聚合，口径见 README）      |
 | 验收套件       | `tests/acceptance/`                      | Playwright 31 用例（真实浏览器验收）                           |
