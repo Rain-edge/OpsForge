@@ -73,7 +73,7 @@ smoke-ping 等）。本次刻意 `down -v` 清空全部卷与自建镜像后复�
 | 2   | 空卷首跑 `import_playbooks.sh`：`Could not find the file /data/repos/...`                        | 从零重建无法导入 Playbook                       | 脚本加 `mkdir -p`（RUNBOOK 坑 8）                                       |
 | 3   | `docker cp` 源路径报 `GetFileAttributesEx C:\c:`（本机 MSYS 不做参数转换）                       | 两个脚本在 Git Bash 下不可用                    | 统一 `to_win_path()`（RUNBOOK 坑 9）                                    |
 | 4   | **自愈规则可能被静默跳过**：`CHECKS` 注册表靠 import 副作用填充，仅加载 monitor 链路的进程里为空 | 上游/部署形态一变自愈即静默失效                 | `heal/service._handle_alert` 显式导入 checks（回归自检通过）            |
-| 5   | `heal/__init__.py` 注释写"monitor/utils.py 最小侵入 4 行"，与实现（signal 零侵入）矛盾           | 文档与代码打架，评审会翻车                 | 注释更正为 signal 挂点描述                                              |
+| 5   | `heal/__init__.py` 注释写"monitor/utils.py 最小侵入 4 行"，与实现（signal 零侵入）矛盾           | 文档与代码打架，评审会翻车                      | 注释更正为 signal 挂点描述                                              |
 | 6   | 设备备份**静默失败**：`storage/net_devices.env` 丢失 → `WARNING 口令未配置`，UI 无感             | NET 备份/变更审计整体失效且难察觉               | `setup_heal_demo.sh` 生成该文件（0600）+ 缺参显式警告                   |
 | 7   | 演示态三缺口：`smoke-ping`、`demo-app.git`、四册部署                                             | 4 条验收用例失败                                | 新增 `lab/playbooks/smoke-ping.yml` + `lab/scripts/setup_demo_state.sh` |
 | 8   | 验收用例硬编码旧环境数据：`e01` 写死 playbook id 10–13、`ac07` 依赖 smoke-ping 口径              | 从零重建后用例必失败                            | 用例改为按名称动态解析 id（缺对象时报错指向 setup 脚本）                |

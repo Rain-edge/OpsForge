@@ -19,17 +19,19 @@ import unicodedata
 from collections import OrderedDict
 
 # 二开目录 → 展示名（顺序即输出顺序；未命中前缀的文件归入"其他"逐项列出）
-GROUPS = OrderedDict([
-    ("spug_api/apps/ansible_ops/", "后端二开 app（ansible_ops）"),
-    ("lab/web-overlay/",           "前端二开页面（web-overlay）"),
-    ("lab/playbooks/",             "Playbook 库"),
-    ("lab/net/",                   "网络设备实验（FRR）"),
-    ("lab/nodes/",                 "被管节点实验环境"),
-    ("lab/docker/",                "平台镜像构建"),
-    ("lab/scripts/",               "实验/验收脚本"),
-    ("tests/acceptance/",          "验收测试套件"),
-    ("docs/opsforge/",             "项目文档（RUNBOOK/ADR/experiments）"),
-])
+GROUPS = OrderedDict(
+    [
+        ("spug_api/apps/ansible_ops/", "后端二开 app（ansible_ops）"),
+        ("lab/web-overlay/", "前端二开页面（web-overlay）"),
+        ("lab/playbooks/", "Playbook 库"),
+        ("lab/net/", "网络设备实验（FRR）"),
+        ("lab/nodes/", "被管节点实验环境"),
+        ("lab/docker/", "平台镜像构建"),
+        ("lab/scripts/", "实验/验收脚本"),
+        ("tests/acceptance/", "验收测试套件"),
+        ("docs/opsforge/", "项目文档（RUNBOOK/ADR/experiments）"),
+    ]
+)
 
 
 def display_width(text):
@@ -43,13 +45,20 @@ def pad(text, width):
 
 def git_numstat(base):
     """跑 git diff --numstat，返回 (added, deleted, path) 三元组列表。"""
-    cmd = ["git", "-c", "core.quotepath=false",
-           "diff", "--numstat", f"{base}...HEAD"]
+    cmd = ["git", "-c", "core.quotepath=false", "diff", "--numstat", f"{base}...HEAD"]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True,
-                             encoding="utf-8", errors="replace", check=True).stdout
+        out = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        ).stdout
     except subprocess.CalledProcessError as e:
-        sys.exit(f"git diff 失败（基线 {base} 是否存在？remote 是否已 fetch？）:\n{e.stderr}")
+        sys.exit(
+            f"git diff 失败（基线 {base} 是否存在？remote 是否已 fetch？）:\n{e.stderr}"
+        )
     except FileNotFoundError:
         sys.exit("找不到 git 命令，请确认 git 在 PATH 中。")
     rows = []
@@ -66,8 +75,12 @@ def git_numstat(base):
 
 def main():
     ap = argparse.ArgumentParser(description="OpsForge 二开 diff 统计（按目录聚合）")
-    ap.add_argument("base", nargs="?", default="upstream/master",
-                    help="diff 基线（默认 upstream/master，可用 tag/commit）")
+    ap.add_argument(
+        "base",
+        nargs="?",
+        default="upstream/master",
+        help="diff 基线（默认 upstream/master，可用 tag/commit）",
+    )
     args = ap.parse_args()
 
     rows = git_numstat(args.base)
@@ -88,9 +101,17 @@ def main():
             g[1] += added
             g[2] += deleted
 
-    name_w = max([38] + [display_width(name) for name in groups] +
-                 [display_width("  └ " + p) for p in others]) + 1
-    print(f"OpsForge 二开统计（基线 {args.base} ... HEAD，共 {len(rows)} 个文本文件）\n")
+    name_w = (
+        max(
+            [38]
+            + [display_width(name) for name in groups]
+            + [display_width("  └ " + p) for p in others]
+        )
+        + 1
+    )
+    print(
+        f"OpsForge 二开统计（基线 {args.base} ... HEAD，共 {len(rows)} 个文本文件）\n"
+    )
     print(f"{pad('分类', name_w)}{'文件':>6}{'新增':>10}{'删除':>8}")
     print("-" * (name_w + 24))
     total = [0, 0, 0]
