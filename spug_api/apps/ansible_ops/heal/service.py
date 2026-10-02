@@ -58,6 +58,11 @@ def handle_alert(sender, instance, created, **kwargs):
 
 def _handle_alert(alarm):
     from apps.ansible_ops.models import HealRule, HealEvent
+    # 显式导入 checks 子模块（2026-10-02 修复）：CHECKS 注册表靠 @register 的
+    # import 副作用填充，若本 handler 运行在只加载了 monitor 链路的进程里，
+    # 注册表为空 → 所有规则被"复检插件未注册"静默跳过（容器内实测复现）。
+    # 当前生产链路由 spug.urls 导入链兜住，这里把隐式依赖钉成硬保证。
+    from apps.ansible_ops.inspection import checks  # noqa: F401
     from apps.ansible_ops.inspection import CHECKS
     from apps.host.models import Host
 
