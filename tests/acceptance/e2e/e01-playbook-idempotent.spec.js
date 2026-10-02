@@ -18,15 +18,16 @@ const { login } = require('../helpers/login');
 const { apiLogin, apiGet } = require('../helpers/spug-api');
 const { ensureLabHealthy } = require('../helpers/lab-env');
 
-// 平台库 id（probe-e2e.js 探查实证）：10=baseline 11=mysql 12=nginx 13=redis
-const RUNS = [
-  { playbook_id: 10, name: 'baseline' },
-  { playbook_id: 10, name: 'baseline（二连跑）' },
-  { playbook_id: 12, name: 'nginx' },
-  { playbook_id: 11, name: 'mysql-master-slave' },
-  { playbook_id: 13, name: 'redis-sentinel' },
+// 平台库 id 与主机 id 一律按名称动态解析（不硬编码：down -v 从零重建后 id 会变，
+// 2026-10-02 复跑实测硬编码 10-13 会导致「Playbook 不存在」）
+const RUN_NAMES = [
+  { name: 'baseline' },
+  { name: 'baseline（二连跑）', playbook: 'baseline' },
+  { name: 'nginx' },
+  { name: 'mysql-master-slave' },
+  { name: 'redis-sentinel' },
 ];
-const HOST_IDS = [1, 2, 3, 4, 5, 6, 7]; // 7 台全量（job 82 实证）
+const HOST_NAMES = ['web-01', 'web-02', 'db-01', 'db-02', 'cache-01', 'cache-02', 'cache-03'];
 
 test('AC-E2E-01 四册 Playbook 重跑全部幂等（changed=0）', async ({ page, request }) => {
   // 前置：环境必须收敛（前序注入用例的残留——如 nginx 停着——会被 service task
@@ -34,6 +35,20 @@ test('AC-E2E-01 四册 Playbook 重跑全部幂等（changed=0）', async ({ pag
   await ensureLabHealthy();
 
   const token = await apiLogin(request);
+
+  // 0. 名称 → id 解析（缺 Playbook/主机直接失败，报错指向 setup 脚本）
+  const pbs = await apiGet(request, token, '/api/ansible_ops/playbooks/');
+  const pbId = Object.fromEntries(pbs.map((p) => [p.name, p.id]));
+  const hosts = await apiGet(request, token, '/api/host/');
+  const hostId = Object.fromEntries(hosts.map((h) => [h.name, h.id]));
+  const RUNS = RUN_NAMES.map((r) => ({ ...r, playbook_id: pbId[r.playbook || r.name] }));
+  const HOST_IDS = HOST_NAMES.map((n) => hostId[n]);
+  for (const r of RUNS) {
+    expect(r.playbook_id, `${r.name} 应已入库（缺则先跑 lab/scripts/import_playbooks.sh）`).toBeTruthy();
+  }
+  for (const [i, id] of HOST_IDS.entries()) {
+    expect(id, `${HOST_NAMES[i]} 应已纳管（缺则先跑 lab/scripts/register_hosts.sh）`).toBeTruthy();
+  }
 
   // 1. 依次发起 5 次执行并等待终态（串行：并发信号量上限 2，且幂等比较要求顺序）
   //    baseline 第一跑允许 changed≥0：前序用例可能重启过节点（如 e04 停过 cache-03），
