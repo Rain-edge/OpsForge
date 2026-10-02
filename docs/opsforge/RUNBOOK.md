@@ -133,7 +133,7 @@ docker compose -f docs/docker/docker-compose.yml -f docker-compose.override.yml 
 | 3   | 登录接口报 `Column 'type' cannot be null`                                                        | curl 登录 500                                                                                                                                                     | 登录接口要求 body 带 `"type":"default"`（普通登录）或 `"ldap"`；漏传即触发登录记录表非空约束                                                                                                              |
 | 4   | 宿主 80 端口被占                                                                                 | spug 容器起不来                                                                                                                                                   | 改 override 中端口映射（如 `"8000:80"`），浏览器地址同步改                                                                                                                                                |
 | 5   | 绝对路径挂载不落地                                                                               | `/data/spug/...` 落进 Docker VM 内部，Windows 侧不可见                                                                                                            | 已用命名卷替代（见 §2）                                                                                                                                                                                   |
-| 6   | 容器运行代码 ≠ 本仓库代码                                                                        | 官方镜像首启从 gitee 拉 **v4.0.1** 代码运行                                                                                                                       | 本次任务仅验证平台可运行；**让容器跑本仓库二开代码是执行引擎的前置工作**（挂载或自建镜像）                                                                                                   |
+| 6   | 容器运行代码 ≠ 本仓库代码                                                                        | 官方镜像首启从 gitee 拉 **v4.0.1** 代码运行                                                                                                                       | 本次任务仅验证平台可运行；**让容器跑本仓库二开代码是执行引擎的前置工作**（挂载或自建镜像）                                                                                                                |
 | 7   | 空库首次 `init_spug` 报 `(2002, "Can't connect to server on 'db' (115)")`                        | `down -v` 删卷后 `up` 完**立刻**执行 `docker exec spug init_spug`                                                                                                 | mariadb 空数据目录初始化需时间（秒级到数十秒），初始化窗口内连不上；先等 `docker exec spug-db mysqladmin ping -uroot -p*** ` 返回 alive 再 init（README 快速开始已加该等待步骤；2026-10-02 从零重建实测） |
 | 8   | 空卷首跑 `import_playbooks.sh` 失败：`Could not find the file /data/repos/ansible_ops/playbooks` | `docker cp` 要求容器内目标父目录已存在，全新 spug-repos 卷上空目录不存在                                                                                          | 脚本已加 `docker exec spug mkdir -p`（2026-10-02 修复）；此坑只在真实空卷首跑暴露，历史环境目录早已存在                                                                                                   |
 | 9   | `docker cp` 报 `GetFileAttributesEx C:\c: The system cannot find the file specified`             | 本机 Git Bash 关闭了 MSYS 参数转换时，`/c/Users/...` 原样交给 docker.exe                                                                                          | 脚本内统一 `to_win_path()`（`cygpath -w` 归一，Linux 透传）；已应用到 `import_playbooks.sh` / `setup_heal_demo.sh`（2026-10-02 修复）                                                                     |
@@ -611,21 +611,16 @@ ssh -p 2231 ops@localhost                                    # 人工调试口�
 
 10 张任务全部完成后，文档与证据链的落点：
 
-| 产物           | 位置                                     | 说明                                                           |
-| -------------- | ---------------------------------------- | -------------------------------------------------------------- |
-| README（重写） | 仓库根 `README.md`                       | mermaid 架构图 + 快速开始 + 实测数据表（逐格溯源 experiments） |
+| 产物           | 位置                                     | 说明                                                                       |
+| -------------- | ---------------------------------------- | -------------------------------------------------------------------------- |
+| README（重写） | 仓库根 `README.md`                       | mermaid 架构图 + 快速开始 + 实测数据表（逐格溯源 experiments）             |
 | ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| ADR ×5         | `docs/opsforge/adr/`                     | 关键设计决策：基线运行形态 / 节点环境 / 为何二开 / 自建引擎 / 网络设备模拟 |
-| 实验汇总       | `docs/opsforge/experiments/summary.json` | 全部量化指标的结构化汇总，每格带 source 指向原始记录           |
-| 二开统计       | `scripts/oss-diff.py`                    | `python scripts/oss-diff.py`（按目录聚合，口径见 README）      |
-| 验收套件       | `tests/acceptance/`                      | Playwright 31 用例（真实浏览器验收）                           |
+| 实验汇总       | `docs/opsforge/experiments/summary.json` | 全部量化指标的结构化汇总，每格带 source 指向原始记录                       |
+| 二开统计       | `scripts/oss-diff.py`                    | `python scripts/oss-diff.py`（按目录聚合，口径见 README）                  |
+| 验收套件       | `tests/acceptance/`                      | Playwright 31 用例（真实浏览器验收）                                       |
 
 最终回归（2026-10-02，实测）：容器内 `pytest` **142 passed**；
-README 快速开始 6 步在现有环境逐条复跑验证（其中步骤 3 带 `--build` 会触发节点
+README 快速开始的各步骤在现有环境逐条复跑验证（其中步骤 3 带 `--build` 会触发节点
 容器重建，README 已注明；验证过程与恢复记录见
 `experiments/2026-10-02-full-replay.md`）。完整首启（干净环境）过程
 以 §2–§4 的实测记录为准。
