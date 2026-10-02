@@ -19,6 +19,12 @@ services:
     volumes: !override
       - spug-repos:/data/repos
       - spug-storage:/data/spug/spug_api/storage
+    ports: !override
+      # 平台入口（官方 compose 的 80:80，此处显式声明未被 override 覆盖掉）
+      - "80:80"
+      # 告警自愈消息 mock 接收端（容器内 9999）：映射到宿主 8002，
+      # 演示时可直接用浏览器看自愈报告消息（mock_webhook.py 头注引用此端口）
+      - "8002:9999"
 
 volumes:
   spug-db:
