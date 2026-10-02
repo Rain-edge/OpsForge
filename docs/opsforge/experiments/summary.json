@@ -309,7 +309,7 @@
   "oss_diff": {
    "baseline": "upstream/master",
    "measured_at": "2026-10-02（随提交增长）",
-   "total": "158 files changed, 13884 insertions(+), 118 deletions(-)",
+   "total": "159 files changed, 13906 insertions(+), 118 deletions(-)",
    "second_dev_groups": {
     "backend_app": {
      "files": 42,
@@ -360,8 +360,8 @@
      "_note": "从 v4.0.1 tag 恢复的上游原件，不计二开"
     },
     "misc": {
-     "files": 9,
-     "added": 326,
+     "files": 10,
+     "added": 349,
      "deleted": 118,
      "_note": "杂项配置/oss-diff.py 自身/README 重写的 118 行删除"
     }
