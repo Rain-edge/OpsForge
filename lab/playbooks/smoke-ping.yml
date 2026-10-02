@@ -1,0 +1,9 @@
+# OpsForge 冒烟 Playbook（验收桩）：最小连通性验证，ansible ping 模块打全部选中主机。
+# 用途：验收套件 AC-ANS-07「Playbook 从管理页直达执行」与手工冒烟；不产生任何变更
+#（ping 模块幂等、changed=0），可随意重复执行。
+# 口径：保持默认 gather_facts（AC-ANS-07 断言 2 台主机 recap ok=4 = Gathering Facts + ping），
+#       勿加 gather_facts: false（会变成 ok=2，验收用例失败——2026-10-02 实测踩坑）。
+- hosts: all
+  tasks:
+    - name: smoke ping 连通性检查
+      ping:

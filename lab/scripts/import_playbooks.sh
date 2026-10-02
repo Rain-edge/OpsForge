@@ -14,9 +14,15 @@
 set -euo pipefail
 
 # Git Bash (MSYS) 会把 /tmp、/data 开头的参数转换成 Windows 路径再传给 docker.exe，
-# 导致容器内路径被改写（实测 python3 找不到文件、rm 删错位置）；排除这两个前缀，
-# 而 docker cp 的宿主源路径 /c/Users/... 不受影响仍正常转换（Linux 下该变量被忽略）
+# 导致容器内路径被改写（实测 python3 找不到文件、rm 删错位置）；排除这两个前缀。
+# 反向坑（2026-10-02 实测）：宿主→容器拷贝的源路径相反——本机 MSYS 关闭了参数
+# 转换时 /c/Users/... 会原样交给 docker.exe，报 "GetFileAttributesEx C:\c:"；
+# 统一用 to_win_path 归一为 Windows 形态（Linux 下 cygpath 不存在，原样透传）。
 export MSYS2_ARG_CONV_EXCL="/tmp;/data"
+
+to_win_path() {
+    if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
 
 FORCE="${1:-}"
 CONTAINER="${CONTAINER:-spug}"
@@ -38,13 +44,16 @@ trap 'rm -f /tmp/opsforge.env; docker exec "${CONTAINER:-spug}" rm -rf /tmp/play
 #    注意：Windows 下 docker cp 目录合并（src/.）覆盖不可靠（实测静默保留旧文件），
 #    一律先删目标再整目录拷贝，保证「仓库源为准」
 docker exec "${CONTAINER}" rm -rf /tmp/playbooks-src
-docker cp "${SRC_DIR}" "${CONTAINER}:/tmp/playbooks-src"
+docker cp "$(to_win_path "${SRC_DIR}")" "${CONTAINER}:/tmp/playbooks-src"
 echo "[CP  ] 源文件已拷入 ${CONTAINER}:/tmp/playbooks-src/"
 
 # 2. 辅助目录重建进 REPOS 卷（以仓库源为准，删除重建防旧文件残留）
+#    空卷首跑：docker cp 要求目标父目录已存在（实测全新卷报
+#    "Could not find the file /data/repos/ansible_ops/playbooks"），先显式建目录
+docker exec "${CONTAINER}" mkdir -p "${REPOS_PLAYBOOKS}"
 for d in group_vars host_vars templates; do
     docker exec "${CONTAINER}" rm -rf "${REPOS_PLAYBOOKS}/${d}"
-    docker cp "${SRC_DIR}/${d}" "${CONTAINER}:${REPOS_PLAYBOOKS}/${d}"
+    docker cp "$(to_win_path "${SRC_DIR}/${d}")" "${CONTAINER}:${REPOS_PLAYBOOKS}/${d}"
     echo "[CP  ] ${d}/ -> ${REPOS_PLAYBOOKS}/${d}/"
 done
 
