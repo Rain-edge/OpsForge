@@ -22,7 +22,17 @@ source /tmp/opsforge.env && rm -f /tmp/opsforge.env
 SPUG_USER="${SPUG_USER:?SPUG_USER missing, check lab/nodes/.env}"
 SPUG_PASS="${SPUG_PASS:?SPUG_PASS missing, check lab/nodes/.env}"
 
-API() { curl -s -X "$1" "${BASE_URL}$2" -H 'Content-Type: application/json' -H "x-token: ${TOKEN}" ${3:+-d "$3"}; }
+# 注意：payload 一律走 stdin（--data-binary @-）传，不用 -d 内联参数——
+# Windows/Git Bash 会把命令行参数里的非 ASCII 转成系统编码（GBK），
+# 服务端 json 解析非 UTF-8 字节会报 "Invalid data type for parse"（2026-10-02 实测）。
+API() {
+    if [ -n "${3:-}" ]; then
+        printf '%s' "$3" | curl -s -X "$1" "${BASE_URL}$2" \
+            -H 'Content-Type: application/json' -H "x-token: ${TOKEN}" --data-binary @-
+    else
+        curl -s -X "$1" "${BASE_URL}$2" -H 'Content-Type: application/json' -H "x-token: ${TOKEN}"
+    fi
+}
 
 # 1. 登录
 TOKEN=$(curl -sSf -X POST "${BASE_URL}/api/account/login/" \
