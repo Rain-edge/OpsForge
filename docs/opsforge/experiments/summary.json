@@ -309,7 +309,7 @@
   "oss_diff": {
    "baseline": "upstream/master",
    "measured_at": "2026-10-02（随提交增长）",
-   "total": "159 files changed, 14157 insertions(+), 119 deletions(-)",
+   "total": "158 files changed, 13880 insertions(+), 118 deletions(-)",
    "second_dev_groups": {
     "backend_app": {
      "files": 42,
@@ -344,13 +344,13 @@
      "added": 1711
     },
     "project_docs": {
-     "files": 10,
-     "added": 1555
+     "files": 9,
+     "added": 1342
     }
    },
    "second_dev_subtotal": {
-    "files": 142,
-    "added": 12426,
+    "files": 141,
+    "added": 12213,
     "_note": "二开工作量口径（分组小计）"
    },
    "excluded": {
@@ -361,9 +361,9 @@
     },
     "misc": {
      "files": 9,
-     "added": 390,
-     "deleted": 119,
-     "_note": "杂项配置/oss-diff.py 自身/README 重写的 119 行删除"
+     "added": 326,
+     "deleted": 118,
+     "_note": "杂项配置/oss-diff.py 自身/README 重写的 118 行删除"
     }
    },
    "source": "scripts/oss-diff.py 完整输出（2026-10-02）"
