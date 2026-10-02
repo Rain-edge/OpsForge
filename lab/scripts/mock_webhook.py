@@ -64,7 +64,10 @@ class Handler(BaseHTTPRequestHandler):
         msgs = _list_msgs()
         rows = []
         for name, payload in msgs:
-            text = payload.get('markdown', {}).get('text') or json.dumps(payload, ensure_ascii=False)
+            # 钉钉渠道是 markdown.text，企微渠道是 markdown.content——两种都要取，
+            # 否则企微消息在预览页退化成裸 JSON（2026-10-02 修复）
+            md = payload.get('markdown') or {}
+            text = md.get('text') or md.get('content') or json.dumps(payload, ensure_ascii=False)
             rows.append(f'<div class="msg"><h2>{name}</h2>{_md_to_html(text)}</div>')
         html = ('<!doctype html><meta charset="utf-8"><title>OpsForge mock webhook</title>'
                 '<style>body{font-family:sans-serif;max-width:680px;margin:24px auto;background:#f5f6f7}'
